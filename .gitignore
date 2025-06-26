@@ -1,0 +1,10 @@
+# Python Virtual Environments
+venv/
+ENV/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/*
+.DS_Store
