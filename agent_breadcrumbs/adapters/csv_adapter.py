@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from .base import BaseAdapter
-from ..schemas import AgentAction
+from ..schemas import AgentAction, TokenUsage
 
 
 class CSVAdapter(BaseAdapter):
@@ -27,15 +27,28 @@ class CSVAdapter(BaseAdapter):
                         "action_type",
                         "input_data",
                         "output_data",
-                        "token_count",
                         "model_name",
+                        "prompt_tokens",
+                        "completion_tokens",
+                        "total_tokens",
+                        "cost_usd",
                         "duration_ms",
                         "metadata",
                     ]
                 )
 
     def log_action(self, action: AgentAction) -> str:
-        """Append action to CSV file"""
+        """Append action to CSV file with enhanced token breakdown"""
+
+        prompt_tokens = ""
+        completion_tokens = ""
+        total_tokens = action.token_count or ""
+
+        if action.token_usage:
+            prompt_tokens = action.token_usage.prompt_tokens or ""
+            completion_tokens = action.token_usage.completion_tokens or ""
+            total_tokens = action.token_usage.total_tokens or ""
+
         with open(self.file_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(
@@ -46,9 +59,12 @@ class CSVAdapter(BaseAdapter):
                     action.action_type,
                     action.input_data,
                     action.output_data,
-                    action.token_count,
-                    action.model_name,
-                    action.duration_ms,
+                    action.model_name or "",
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    action.cost_usd or "",
+                    action.duration_ms or "",
                     action.metadata,
                 ]
             )
@@ -86,7 +102,21 @@ class CSVAdapter(BaseAdapter):
         return actions
 
     def _row_to_action(self, row: Dict[str, str]) -> AgentAction:
-        """Convert CSV row to AgentAction"""
+        """Convert CSV row to AgentAction with token breakdown"""
+
+        # Reconstruct token usage if available
+        token_usage = None
+        if row.get("prompt_tokens") or row.get("completion_tokens"):
+            token_usage = TokenUsage(
+                prompt_tokens=int(row["prompt_tokens"])
+                if row["prompt_tokens"]
+                else None,
+                completion_tokens=int(row["completion_tokens"])
+                if row["completion_tokens"]
+                else None,
+                total_tokens=int(row["total_tokens"]) if row["total_tokens"] else None,
+            )
+
         return AgentAction(
             action_id=row["action_id"],
             session_id=row["session_id"],
@@ -94,8 +124,10 @@ class CSVAdapter(BaseAdapter):
             action_type=row["action_type"],
             input_data=row["input_data"],
             output_data=row["output_data"],
-            token_count=int(row["token_count"]) if row["token_count"] else None,
             model_name=row["model_name"] if row["model_name"] else None,
+            token_usage=token_usage,
+            token_count=int(row["total_tokens"]) if row["total_tokens"] else None,
+            cost_usd=float(row["cost_usd"]) if row["cost_usd"] else None,
             duration_ms=float(row["duration_ms"]) if row["duration_ms"] else None,
             metadata=row["metadata"],
         )
