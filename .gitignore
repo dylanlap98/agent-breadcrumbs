@@ -8,3 +8,10 @@ __pycache__/
 *.pyc
 *.egg-info/*
 .DS_Store
+requirements.txt
+
+# secrets
+.env
+
+# CSV files in examples
+examples/*.csv

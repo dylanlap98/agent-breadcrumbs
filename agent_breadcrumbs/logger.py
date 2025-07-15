@@ -57,20 +57,27 @@ class AgentLogger:
         action_type: str,
         input_data: Dict[str, Any],
         output_data: Dict[str, Any],
+        model_name: Optional[str] = None,
+        token_count: Optional[int] = None,
+        duration_ms: Optional[float] = None,
         **metadata,
     ) -> str:
         """Internal method to log any action"""
         start_time = time.time()
-        duration_ms = (time.time() - start_time) * 1000
-        logger.info(
-            f"Logging action: {action_type}, duration: {duration_ms:.2f} ms"
-        )
+
+        if duration_ms is None:
+            duration_ms = (time.time() - start_time) * 1000
+
+        logger.info(f"Logging action: {action_type}, duration: {duration_ms:.2f} ms")
 
         action = AgentAction(
             session_id=self.session_id,
             action_type=action_type,
             input_data=json.dumps(input_data, default=str),
             output_data=json.dumps(output_data, default=str),
+            token_count=token_count,
+            model_name=model_name,
+            duration_ms=duration_ms,
             metadata=json.dumps(metadata, default=str),
         )
 
