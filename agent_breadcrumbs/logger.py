@@ -1,10 +1,22 @@
 from asyncio.log import logger
 import json
 import time
+import logging
 from typing import Dict, Any, Optional
 import uuid
 from .schemas import AgentAction, TokenUsage
 from .adapters.csv_adapter import CSVAdapter
+
+
+def setup_logging(level=logging.WARNING):
+    """Setup logging to see cost calculation warnings in terminal"""
+    logging.basicConfig(
+        level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    # Enable cost calculation warnings
+    cost_logger = logging.getLogger("agent_breadcrumbs.cost")
+    cost_logger.setLevel(level)
+    return cost_logger
 
 
 class AgentLogger:

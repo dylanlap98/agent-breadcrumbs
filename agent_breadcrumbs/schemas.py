@@ -2,6 +2,11 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Dict, Any, Optional
 import uuid
+import logging
+
+# Set up logger
+cost_logger = logging.getLogger("agent_breadcrumbs.cost")
+cost_logger.setLevel(logging.WARNING)
 
 
 class TokenUsage(BaseModel):
@@ -23,7 +28,23 @@ class TokenUsage(BaseModel):
             "gpt-4": {"input": 0.03, "output": 0.06},  # per 1K tokens
             "gpt-4-turbo": {"input": 0.01, "output": 0.03},  # per 1K tokens
             "gpt-3.5-turbo": {"input": 0.001, "output": 0.002},  # per 1K tokens
+            "gpt-4.1": {"input": 0.003, "output": 0.010},  # per 1K tokens
+            "gpt-4.1-mini": {
+                "input": 0.00015,
+                "output": 0.0006,
+            },
+            "gpt-4.1-nano": {
+                "input": 0.0001,
+                "output": 0.0004,
+            },
         }
+
+        # Handle versioned model names (e.g., "gpt-4.1-mini-2025-04-14" -> "gpt-4.1-mini")
+        model_base = model_name
+        for base_name in pricing.keys():
+            if model_name.startswith(base_name):
+                model_base = base_name
+                break
 
         if model_name not in pricing:
             return None
