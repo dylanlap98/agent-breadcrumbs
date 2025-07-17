@@ -46,7 +46,7 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
         super().__init__()
         self.logger = logger or AgentLogger()
         self.log_tools = log_tools
-        self.runs = {}
+        self.runs = {}  # Track runs by ID
 
     def on_llm_start(
         self,
@@ -83,7 +83,7 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
 
         response_text = self._extract_response_text(response)
 
-        model_name = run_info.get("model_name", "unknown")
+        model_name = self._extract_real_model_name(response, run_info)
 
         prompt_tokens = None
         completion_tokens = None
@@ -188,10 +188,7 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
                     ):
                         return value
 
-            if fallback_name == "ChatOpenAI":
-                return "unknown"
-            elif fallback_name == "AzureChatOpenAI":
-                return "unknown"
+            return "unknown"
 
         return fallback_name
 
