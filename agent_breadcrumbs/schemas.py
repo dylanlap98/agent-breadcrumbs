@@ -19,40 +19,64 @@ class TokenUsage(BaseModel):
     def calculate_cost(self, model_name: str) -> Optional[float]:
         """Calculate cost in USD based on current OpenAI pricing"""
         if not self.prompt_tokens or not self.completion_tokens:
+            cost_logger.warning(
+                f"Cannot calculate cost for model '{model_name}': missing token counts "
+                f"(prompt_tokens={self.prompt_tokens}, completion_tokens={self.completion_tokens})"
+            )
             return None
 
-        # Current OpenAI pricing (as of 2024/2025)
+        # Current OpenAI pricing (as of 2024/2025) - per 1K tokens
         pricing = {
-            "gpt-4o": {"input": 0.005, "output": 0.015},  # per 1K tokens
-            "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},  # per 1K tokens
-            "gpt-4": {"input": 0.03, "output": 0.06},  # per 1K tokens
-            "gpt-4-turbo": {"input": 0.01, "output": 0.03},  # per 1K tokens
-            "gpt-3.5-turbo": {"input": 0.001, "output": 0.002},  # per 1K tokens
-            "gpt-4.1": {"input": 0.003, "output": 0.010},  # per 1K tokens
-            "gpt-4.1-mini": {
+            "gpt-4o": {"input": 0.0025, "output": 0.010},  # $2.50/$10.00 per 1M tokens
+            "gpt-4o-mini": {
                 "input": 0.00015,
                 "output": 0.0006,
-            },
+            },  # $0.15/$0.60 per 1M tokens
+            "gpt-4": {"input": 0.03, "output": 0.06},  # $30/$60 per 1M tokens
+            "gpt-4-turbo": {"input": 0.01, "output": 0.03},  # $10/$30 per 1M tokens
+            "gpt-3.5-turbo": {"input": 0.001, "output": 0.002},  # $1/$2 per 1M tokens
+            # GPT-4.1 series (2025) - Updated with correct pricing
+            "gpt-4.1": {"input": 0.002, "output": 0.008},  # $2.00/$8.00 per 1M tokens
+            "gpt-4.1-mini": {
+                "input": 0.0004,
+                "output": 0.0016,
+            },  # $0.40/$1.60 per 1M tokens
             "gpt-4.1-nano": {
                 "input": 0.0001,
                 "output": 0.0004,
-            },
+            },  # $0.10/$0.40 per 1M tokens
         }
 
         # Handle versioned model names (e.g., "gpt-4.1-mini-2025-04-14" -> "gpt-4.1-mini")
+        # Sort by length DESC to match longest prefix first
         model_base = model_name
-        for base_name in pricing.keys():
+        for base_name in sorted(pricing.keys(), key=len, reverse=True):
             if model_name.startswith(base_name):
                 model_base = base_name
                 break
 
-        if model_name not in pricing:
+        # FIX: Check model_base, not model_name!
+        if model_base not in pricing:
+            cost_logger.warning(
+                f"Model '{model_name}' not found in pricing database. "
+                f"Available models: {list(pricing.keys())}. "
+                f"Cost calculation skipped. Consider adding pricing data for this model."
+            )
             return None
 
-        input_cost = (self.prompt_tokens / 1000) * pricing[model_name]["input"]
-        output_cost = (self.completion_tokens / 1000) * pricing[model_name]["output"]
+        # FIX: Use model_base for pricing lookup!
+        input_cost = (self.prompt_tokens / 1000) * pricing[model_base]["input"]
+        output_cost = (self.completion_tokens / 1000) * pricing[model_base]["output"]
 
-        return input_cost + output_cost
+        total_cost = input_cost + output_cost
+
+        # Log successful calculation at debug level
+        cost_logger.debug(
+            f"Cost calculated for {model_name}: "
+            f"${input_cost:.6f} (input) + ${output_cost:.6f} (output) = ${total_cost:.6f}"
+        )
+
+        return total_cost
 
 
 class AgentAction(BaseModel):

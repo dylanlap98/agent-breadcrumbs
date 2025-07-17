@@ -49,6 +49,10 @@ class CSVAdapter(BaseAdapter):
             completion_tokens = action.token_usage.completion_tokens or ""
             total_tokens = action.token_usage.total_tokens or ""
 
+        cost_usd = ""
+        if action.cost_usd is not None:
+            cost_usd = f"{action.cost_usd:.8f}"
+
         with open(self.file_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(
@@ -63,7 +67,7 @@ class CSVAdapter(BaseAdapter):
                     prompt_tokens,
                     completion_tokens,
                     total_tokens,
-                    action.cost_usd or "",
+                    cost_usd,
                     action.duration_ms or "",
                     action.metadata,
                 ]
