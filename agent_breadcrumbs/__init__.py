@@ -1,24 +1,37 @@
 """
-Integrations with AI/LLM frameworks
+Agent Breadcrumbs - Follow the trail of your AI agents
+
+A simple, transparent library for logging LLM agent interactions.
+Perfect for building training datasets, debugging agent behavior,
+and understanding AI decision-making processes.
 """
 
-try:
-    from .langchain import (
-        AgentBreadcrumbsCallback,
-        enable_breadcrumbs,
-        check_langchain_available,
-    )
+from .logger import AgentLogger, setup_logging
+from .schemas import AgentAction, TokenUsage
+from .adapters.csv_adapter import CSVAdapter
 
-    LANGCHAIN_AVAILABLE = True
+try:
+    from .integrations.langchain import AgentBreadcrumbsCallback, enable_breadcrumbs
+
+    LANGCHAIN_INTEGRATION = True
 except ImportError:
-    LANGCHAIN_AVAILABLE = False
     AgentBreadcrumbsCallback = None
     enable_breadcrumbs = None
-    check_langchain_available = lambda: False
+    LANGCHAIN_INTEGRATION = False
 
+__version__ = "0.1.0"
 __all__ = [
+    "AgentLogger",
+    "AgentAction",
+    "CSVAdapter",
+    "TokenUsage",
+    "setup_logging",
+    "quick_logger",
     "AgentBreadcrumbsCallback",
     "enable_breadcrumbs",
-    "check_langchain_available",
-    "LANGCHAIN_AVAILABLE",
 ]
+
+
+def quick_logger(file_path: str = "agent_breadcrumbs.csv") -> AgentLogger:
+    """Create a logger with CSV adapter"""
+    return AgentLogger(adapter=CSVAdapter(file_path))
