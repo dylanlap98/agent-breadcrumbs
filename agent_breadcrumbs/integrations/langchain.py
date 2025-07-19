@@ -1,6 +1,6 @@
 """
 LangChain integration for agent-breadcrumbs
-Non-invasive logging for all LangChain operations
+Non-invasive logging for LangChain operations
 """
 
 from typing import Dict, List, Any, Optional
@@ -21,14 +21,14 @@ from ..logger import AgentLogger
 
 class AgentBreadcrumbsCallback(BaseCallbackHandler):
     """
-    Non-invasive LangChain callback for automatic logging
+    Simple, reliable callback for LLM observability
 
-    Works with:
-    - Regular invoke() calls
-    - Streaming (.stream(), .astream())
-    - Agents and tools
-    - Batch processing
-    - Any LangChain model or chain
+    Focuses on what LangChain reliably provides:
+    - LLM calls and responses (including tool call decisions)
+    - Token usage and costs
+    - Complete conversation flow
+
+    Perfect for beginners who want to understand what their LLMs are doing.
     """
 
     def __init__(self, logger: AgentLogger = None, log_tools: bool = True):
@@ -51,7 +51,7 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
-        """Called when LLM starts - store the prompt"""
+        """Called when LLM starts"""
         import time
 
         self.runs[str(run_id)] = {
@@ -59,7 +59,7 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
             "model_name": self._extract_model_name(serialized),
             "metadata": metadata or {},
             "tags": tags or [],
-            "start_time": time.time(),  # Record start time
+            "start_time": time.time(),
         }
 
     def on_llm_end(
@@ -77,7 +77,7 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
 
         prompts = run_info.get("prompts", [])
         prompt_text = " ".join(prompts) if prompts else "Unknown prompt"
-        response_text = self._extract_response_text(response)
+        response_text = self._extract_complete_response(response)
 
         model_name = self._extract_real_model_name(response, run_info)
 
@@ -86,17 +86,15 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
         if start_time:
             duration_ms = (time.time() - start_time) * 1000
 
+        token_usage = self._extract_real_token_usage(response, run_info, kwargs)
         prompt_tokens = None
         completion_tokens = None
         total_tokens = None
 
-        token_usage = self._extract_real_token_usage(response, run_info, kwargs)
         if token_usage:
             prompt_tokens = token_usage.get("prompt_tokens")
             completion_tokens = token_usage.get("completion_tokens")
             total_tokens = token_usage.get("total_tokens")
-
-        self._handle_tool_calls_in_response(response, run_info)
 
         # Log the interaction
         self.logger.log_llm_call(
@@ -116,49 +114,6 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
         # Cleanup
         if str(run_id) in self.runs:
             del self.runs[str(run_id)]
-
-    def _handle_tool_calls_in_response(
-        self, response: LLMResult, run_info: Dict[str, Any]
-    ) -> None:
-        """Check if the LLM response contains tool calls and log them"""
-
-        if not response.generations:
-            return
-
-        for generation_list in response.generations:
-            for generation in generation_list:
-                if hasattr(generation, "message") and hasattr(
-                    generation.message, "tool_calls"
-                ):
-                    tool_calls = generation.message.tool_calls
-
-                    if tool_calls:
-                        for tool_call in tool_calls:
-                            self._log_planned_tool_call(tool_call, run_info)
-
-    def _log_planned_tool_call(
-        self, tool_call: Dict[str, Any], run_info: Dict[str, Any]
-    ) -> None:
-        """Log a tool call that the LLM wants to make"""
-
-        tool_name = tool_call.get("name", "unknown_tool")
-        tool_args = tool_call.get("args", {})
-        tool_id = tool_call.get("id", "unknown_id")
-
-        self.logger.log_tool_use(
-            tool_name=tool_name,
-            tool_input={
-                "planned_args": tool_args,
-                "tool_call_id": tool_id,
-                "call_type": "planned",
-            },
-            tool_output={
-                "status": "planned_by_llm",
-                "note": "LLM requested this tool call but execution depends on agent framework",
-            },
-            langchain_tool_planning=True,
-            **run_info.get("metadata", {}),
-        )
 
     def on_tool_start(
         self,
@@ -205,23 +160,111 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
         if start_time:
             duration_ms = (time.time() - start_time) * 1000
 
+        try:
+            import json
+
+            if tool_input.startswith("{") or tool_input.startswith("["):
+                parsed_input = json.loads(tool_input)
+            else:
+                parsed_input = tool_input
+        except:
+            parsed_input = tool_input
+
+        # Log tool execution (if callback fires)
         self.logger.log_tool_use(
             tool_name=tool_name,
-            tool_input={"input": tool_input},
-            tool_output={"output": output},
+            tool_input={"input": parsed_input},
+            tool_output={"result": output},
             duration_ms=duration_ms,
-            langchain_tool=True,
+            langchain_tool_callback=True,
         )
 
         # Cleanup
         if str(run_id) in self.runs:
             del self.runs[str(run_id)]
 
+    def _extract_complete_response(self, response: LLMResult) -> str:
+        """Extract response including tool call decisions"""
+        if not response.generations:
+            return "No response"
+
+        if not response.generations[0]:
+            return "Empty response"
+
+        generation = response.generations[0][0]
+
+        text_content = ""
+        if hasattr(generation, "text") and generation.text:
+            text_content = generation.text
+        elif hasattr(generation, "message") and hasattr(generation.message, "content"):
+            text_content = generation.message.content or ""
+
+        tool_calls_info = []
+
+        if hasattr(generation, "message"):
+            message = generation.message
+
+            if hasattr(message, "tool_calls") and message.tool_calls:
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.get("name", "unknown_tool")
+                    tool_args = tool_call.get("args", {})
+                    tool_calls_info.append(
+                        {
+                            "name": tool_name,
+                            "args": tool_args,
+                        }
+                    )
+
+            elif hasattr(message, "additional_kwargs") and message.additional_kwargs:
+                additional = message.additional_kwargs
+                if "tool_calls" in additional:
+                    for tool_call in additional["tool_calls"]:
+                        if isinstance(tool_call, dict) and "function" in tool_call:
+                            function = tool_call["function"]
+                            tool_name = function.get("name", "unknown_tool")
+                            try:
+                                import json
+
+                                tool_args = json.loads(function.get("arguments", "{}"))
+                            except:
+                                tool_args = function.get("arguments", "{}")
+                            tool_calls_info.append(
+                                {
+                                    "name": tool_name,
+                                    "args": tool_args,
+                                }
+                            )
+
+        if tool_calls_info and not text_content:
+            if len(tool_calls_info) == 1:
+                tool = tool_calls_info[0]
+                args_str = ", ".join(f"{k}={v}" for k, v in tool["args"].items())
+                return f"🔧 Decided to call tool: {tool['name']}({args_str})"
+            else:
+                calls = []
+                for tool in tool_calls_info:
+                    args_str = ", ".join(f"{k}={v}" for k, v in tool["args"].items())
+                    calls.append(f"{tool['name']}({args_str})")
+                return f"🔧 Decided to call tools: {', '.join(calls)}"
+
+        elif tool_calls_info and text_content:
+            # Text + tool calls
+            calls = []
+            for tool in tool_calls_info:
+                args_str = ", ".join(f"{k}={v}" for k, v in tool["args"].items())
+                calls.append(f"{tool['name']}({args_str})")
+            return f"{text_content}\n\n🔧 Tool calls: {', '.join(calls)}"
+
+        elif text_content:
+            return text_content
+
+        else:
+            return str(generation)
+
     def _extract_real_model_name(
         self, response: LLMResult, run_info: Dict[str, Any]
     ) -> str:
-        """Extract the real model name - works for both streaming and regular calls"""
-
+        """Extract the actual model name"""
         if response.llm_output:
             model_name = response.llm_output.get("model_name")
             if model_name and model_name != "unknown":
@@ -240,7 +283,6 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
             return metadata["ls_model_name"]
 
         fallback_name = run_info.get("model_name", "unknown")
-
         if fallback_name in ["ChatOpenAI", "OpenAI", "AzureChatOpenAI"]:
             return "unknown"
 
@@ -249,8 +291,7 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
     def _extract_real_token_usage(
         self, response: LLMResult, run_info: Dict[str, Any], kwargs: Dict[str, Any]
     ) -> Optional[Dict[str, int]]:
-        """Extract real token usage from various providers and formats"""
-
+        """Extract token usage"""
         if response.llm_output and "token_usage" in response.llm_output:
             usage = response.llm_output["token_usage"]
             return self._normalize_token_usage(usage, "openai")
@@ -258,10 +299,6 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
         if response.llm_output and "usage" in response.llm_output:
             usage = response.llm_output["usage"]
             return self._normalize_token_usage(usage, "anthropic")
-
-        if response.llm_output and "usage_metadata" in response.llm_output:
-            usage = response.llm_output["usage_metadata"]
-            return self._normalize_token_usage(usage, "google")
 
         if response.generations:
             for generation_list in response.generations:
@@ -277,86 +314,33 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
                             usage = generation.generation_info["token_usage"]
                             return self._normalize_token_usage(usage, "openai")
 
-                    if hasattr(generation, "message") and hasattr(
-                        generation.message, "usage_metadata"
-                    ):
-                        usage = generation.message.usage_metadata
-                        if hasattr(usage, "__dict__"):
-                            usage_dict = {
-                                "input_tokens": getattr(usage, "input_tokens", None),
-                                "output_tokens": getattr(usage, "output_tokens", None),
-                                "total_tokens": getattr(usage, "total_tokens", None),
-                            }
-                            return self._normalize_token_usage(usage_dict, "anthropic")
-
-        if "token_usage" in kwargs:
-            return self._normalize_token_usage(kwargs["token_usage"], "openai")
-        if "usage" in kwargs:
-            return self._normalize_token_usage(kwargs["usage"], "anthropic")
-
-        metadata = run_info.get("metadata", {})
-        for usage_key in ["token_usage", "usage", "usage_metadata"]:
-            if usage_key in metadata:
-                provider = (
-                    "anthropic"
-                    if usage_key == "usage"
-                    else "google"
-                    if usage_key == "usage_metadata"
-                    else "openai"
-                )
-                return self._normalize_token_usage(metadata[usage_key], provider)
-
         return None
 
     def _normalize_token_usage(
         self, usage: Dict[str, Any], provider: str
     ) -> Dict[str, int]:
-        """Normalize different provider token usage formats to standard format"""
-
+        """Normalize token usage formats"""
         if provider == "openai":
             return {
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
                 "total_tokens": usage.get("total_tokens"),
             }
-
         elif provider == "anthropic":
             input_tokens = usage.get("input_tokens")
             output_tokens = usage.get("output_tokens")
             total_tokens = None
             if input_tokens and output_tokens:
                 total_tokens = input_tokens + output_tokens
-
             return {
                 "prompt_tokens": input_tokens,
                 "completion_tokens": output_tokens,
                 "total_tokens": total_tokens,
             }
-
-        elif provider == "google":
-            prompt_tokens = usage.get("prompt_token_count")
-            completion_tokens = usage.get("candidates_token_count")
-            total_tokens = None
-            if prompt_tokens and completion_tokens:
-                total_tokens = prompt_tokens + completion_tokens
-
-            return {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-            }
-
-        if "prompt_tokens" in usage:
-            return self._normalize_token_usage(usage, "openai")
-        elif "input_tokens" in usage:
-            return self._normalize_token_usage(usage, "anthropic")
-        elif "prompt_token_count" in usage:
-            return self._normalize_token_usage(usage, "google")
-
         return {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}
 
     def _extract_model_name(self, serialized: Dict[str, Any]) -> str:
-        """Extract model name from serialized LLM info"""
+        """Extract model name from serialized info"""
         if not serialized:
             return "unknown"
 
@@ -366,38 +350,24 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
         elif isinstance(model_id, str):
             return model_id
 
-        return serialized.get(
-            "model_name", serialized.get("model", serialized.get("name", "unknown"))
-        )
-
-    def _extract_response_text(self, response: LLMResult) -> str:
-        """Extract response text from LLMResult"""
-        if not response.generations:
-            return "No response"
-
-        if not response.generations[0]:
-            return "Empty response"
-
-        generation = response.generations[0][0]
-
-        if hasattr(generation, "text"):
-            return generation.text
-        elif hasattr(generation, "message") and hasattr(generation.message, "content"):
-            return generation.message.content
-        else:
-            return str(generation)
+        return serialized.get("model_name", serialized.get("model", "unknown"))
 
 
 def enable_breadcrumbs(
     logger: AgentLogger = None, log_tools: bool = True
 ) -> AgentBreadcrumbsCallback:
     """
-    Enable agent-breadcrumbs logging for LangChain with one line
+    Enable simple, reliable LLM observability
+
+    Perfect for beginners - shows LLM decisions, costs, and conversation flow
+    without complex setup or fragile hacks.
 
     Usage:
         callback = enable_breadcrumbs()
         model = init_chat_model("gpt-4o", callbacks=[callback])
-        # Use LangChain normally - everything gets logged!
+
+        # See what your LLM is thinking!
+        history = callback.logger.get_session_history()
     """
     if not LANGCHAIN_AVAILABLE:
         raise ImportError("LangChain is not installed.")
