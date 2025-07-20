@@ -1,16 +1,116 @@
 import React, { useState } from "react";
-import {
-  Clock,
-  Zap,
-  DollarSign,
-  MessageSquare,
-  Wrench,
-  Activity,
-  RefreshCw,
-  Upload,
-} from "lucide-react";
 
-// Types
+const Clock = ({ size = 16 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+  >
+    <circle cx="12" cy="12" r="10" />
+    <polyline points="12,6 12,12 16,14" />
+  </svg>
+);
+
+const Zap = ({ size = 16 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+  >
+    <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2" />
+  </svg>
+);
+
+const DollarSign = ({ size = 16 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+  >
+    <line x1="12" y1="1" x2="12" y2="23" />
+    <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+  </svg>
+);
+
+const MessageSquare = ({ size = 16 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+  >
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+  </svg>
+);
+
+const Wrench = ({ size = 16 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+  >
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+  </svg>
+);
+
+const Activity = ({ size = 16 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+  >
+    <polyline points="22,12 18,12 15,21 9,3 6,12 2,12" />
+  </svg>
+);
+
+const RefreshCw = ({ size = 16, style = {} }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    style={style}
+  >
+    <polyline points="23,4 23,10 17,10" />
+    <polyline points="1,20 1,14 7,14" />
+    <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+  </svg>
+);
+
+const Upload = ({ size = 16 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+  >
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="7,10 12,5 17,10" />
+    <line x1="12" y1="5" x2="12" y2="15" />
+  </svg>
+);
+
 interface LogEntry {
   action_id: string;
   session_id: string;
@@ -34,9 +134,10 @@ const BreadcrumbsDashboard = () => {
   const [sessions, setSessions] = useState<{ [key: string]: LogEntry[] }>({});
   const [hoveredLog, setHoveredLog] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string>("");
+  const [fileHandle, setFileHandle] = useState<any>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Read local file content
   const readLocalFile = (file: File): Promise<LogEntry[]> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -109,16 +210,48 @@ const BreadcrumbsDashboard = () => {
     });
   };
 
-  // Handle file selection
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const supportsTrueRefresh = "showOpenFilePicker" in window;
+
+  const handleFileSelect = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
     const file = event.target.files?.[0];
     if (file && file.type === "text/csv") {
       setSelectedFile(file);
+      setSelectedFilePath(file.name);
+
+      // Try to get file handle for live refresh (Chrome/Edge only)
+      if (supportsTrueRefresh) {
+        try {
+          console.log("Auto-enabling true refresh for Chrome/Edge...");
+          const [handle] = await (window as any).showOpenFilePicker({
+            types: [
+              {
+                description: "CSV files",
+                accept: { "text/csv": [".csv"] },
+              },
+            ],
+            multiple: false,
+          });
+
+          setFileHandle(handle);
+          const handleFile = await handle.getFile();
+          setSelectedFile(handleFile);
+          setSelectedFilePath(handleFile.name);
+          await loadDataFromFile(handleFile);
+          console.log("True refresh enabled automatically!");
+          return;
+        } catch (error) {
+          console.log("User cancelled file handle request, using basic mode");
+        }
+      }
+
       loadDataFromFile(file);
     }
+    // Reset input so same file can be selected again
+    event.target.value = "";
   };
 
-  // Load data from selected file
   const loadDataFromFile = async (file: File) => {
     setIsLoading(true);
     try {
@@ -126,7 +259,7 @@ const BreadcrumbsDashboard = () => {
       setLogs(csvLogs);
       setLastUpdated(new Date());
 
-      // Group by sessions
+      // Group by session
       const sessionGroups = csvLogs.reduce((acc, log) => {
         if (!acc[log.session_id]) {
           acc[log.session_id] = [];
@@ -143,19 +276,38 @@ const BreadcrumbsDashboard = () => {
     }
   };
 
-  // Manual refresh function
   const handleRefresh = async () => {
     if (!selectedFile) return;
 
     setIsRefreshing(true);
+    console.log("Refreshing file:", selectedFilePath);
+
     try {
+      // Use file handle for live refresh if available
+      if (fileHandle && "getFile" in fileHandle) {
+        try {
+          console.log("Using file handle to get fresh content from disk...");
+          const freshFile = await fileHandle.getFile();
+          setSelectedFile(freshFile);
+          await loadDataFromFile(freshFile);
+          console.log("TRUE REFRESH SUCCESS - loaded fresh data from disk!");
+          return;
+        } catch (error) {
+          console.log("File handle refresh failed:", error);
+        }
+      }
+
+      // Fallback: re-process existing file
+      console.log("No file handle available - re-processing existing data...");
       await loadDataFromFile(selectedFile);
+      console.log("Re-processed existing file data");
+    } catch (error) {
+      console.error("Refresh failed:", error);
     } finally {
       setIsRefreshing(false);
     }
   };
 
-  // Utility functions
   const formatTimestamp = (timestamp: string) => {
     return new Date(timestamp).toLocaleString();
   };
@@ -191,7 +343,7 @@ const BreadcrumbsDashboard = () => {
     const parsed = parseJsonSafely(inputData);
     const prompt = parsed.prompt || inputData || "";
 
-    // Try different extraction patterns
+    // Extract human input from various formats
     const humanMatch = prompt.match(/Human:\s*(.+?)(?=\n|$)/s);
     if (humanMatch && humanMatch[1].trim()) {
       return humanMatch[1].trim();
@@ -216,7 +368,7 @@ const BreadcrumbsDashboard = () => {
     const parsed = parseJsonSafely(outputData);
     let response = parsed.response || outputData || "";
 
-    // Clean up Unicode escape sequences
+    // Clean up Unicode escapes
     response = response
       .replace(/\\u([0-9a-fA-F]{4})/g, (match, code) =>
         String.fromCharCode(parseInt(code, 16))
@@ -336,46 +488,64 @@ const BreadcrumbsDashboard = () => {
                 Select CSV File
               </label>
 
-              <button
-                onClick={handleRefresh}
-                disabled={!selectedFile || isRefreshing}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  backgroundColor:
-                    !selectedFile || isRefreshing ? "#6b7280" : "#10b981",
-                  color: !selectedFile || isRefreshing ? "#9ca3af" : "#ffffff",
-                  border: "none",
-                  borderRadius: "6px",
-                  padding: "8px 12px",
-                  cursor:
-                    !selectedFile || isRefreshing ? "not-allowed" : "pointer",
-                  fontSize: "14px",
-                  fontWeight: "500",
-                  transition: "all 0.2s",
-                }}
-                onMouseEnter={(e) => {
-                  if (!e.currentTarget.disabled) {
-                    e.currentTarget.style.backgroundColor = "#059669";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!e.currentTarget.disabled) {
-                    e.currentTarget.style.backgroundColor = "#10b981";
-                  }
-                }}
-              >
-                <RefreshCw
-                  size={16}
+              {supportsTrueRefresh && (
+                <button
+                  onClick={handleRefresh}
+                  disabled={!selectedFile || isRefreshing}
                   style={{
-                    animation: isRefreshing
-                      ? "spin 1s linear infinite"
-                      : "none",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    backgroundColor:
+                      !selectedFile || isRefreshing ? "#6b7280" : "#059669",
+                    color:
+                      !selectedFile || isRefreshing ? "#9ca3af" : "#ffffff",
+                    border: "none",
+                    borderRadius: "6px",
+                    padding: "8px 12px",
+                    cursor:
+                      !selectedFile || isRefreshing ? "not-allowed" : "pointer",
+                    fontSize: "14px",
+                    fontWeight: "500",
+                    transition: "all 0.2s",
                   }}
-                />
-                {isRefreshing ? "Refreshing..." : "Refresh"}
-              </button>
+                  onMouseEnter={(e) => {
+                    if (!e.currentTarget.disabled) {
+                      e.currentTarget.style.backgroundColor = "#047857";
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!e.currentTarget.disabled) {
+                      e.currentTarget.style.backgroundColor = "#059669";
+                    }
+                  }}
+                >
+                  <RefreshCw
+                    size={16}
+                    style={{
+                      animation: isRefreshing
+                        ? "spin 1s linear infinite"
+                        : "none",
+                    }}
+                  />
+                  {isRefreshing ? "Refreshing..." : "Refresh"}
+                </button>
+              )}
+
+              {!supportsTrueRefresh && selectedFile && (
+                <div
+                  style={{
+                    backgroundColor: "#374151",
+                    color: "#9ca3af",
+                    padding: "8px 12px",
+                    borderRadius: "6px",
+                    fontSize: "12px",
+                    border: "1px solid #4b5563",
+                  }}
+                >
+                  💡 Use Chrome/Edge for live refresh feature
+                </div>
+              )}
             </div>
 
             {lastUpdated && (
@@ -484,9 +654,17 @@ const BreadcrumbsDashboard = () => {
             </span>
             <span style={{ color: "#9ca3af", fontSize: "12px" }}>
               ({(selectedFile.size / 1024).toFixed(1)} KB)
+              {supportsTrueRefresh &&
+                fileHandle &&
+                " • ⚡ Live refresh enabled"}
             </span>
             <span style={{ color: "#9ca3af", fontSize: "12px" }}>
-              • Click "Refresh" to reload for latest changes
+              •{" "}
+              {supportsTrueRefresh
+                ? fileHandle
+                  ? "Refresh loads latest data from disk"
+                  : "File will auto-enable live refresh on Chrome/Edge"
+                : "Viewing file snapshot (refresh not available on this browser)"}
             </span>
           </div>
         </div>
@@ -861,7 +1039,6 @@ const BreadcrumbsDashboard = () => {
                           </div>
                         </div>
 
-                        {/* Input/Output */}
                         {log.action_type === "llm_call" && (
                           <div style={{ marginBottom: "16px" }}>
                             <div style={{ marginBottom: "12px" }}>
