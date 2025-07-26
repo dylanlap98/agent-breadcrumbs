@@ -2,7 +2,7 @@ from asyncio.log import logger
 import json
 import time
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 import uuid
 from .schemas import AgentAction, TokenUsage
 from .adapters.csv_adapter import CSVAdapter
@@ -28,7 +28,7 @@ class AgentLogger:
 
     def log_llm_call(
         self,
-        prompt: str,
+        prompt: Union[str, Dict[str, Any]],
         response: str,
         model_name: Optional[str] = None,
         token_count: Optional[int] = None,
@@ -36,7 +36,15 @@ class AgentLogger:
         completion_tokens: Optional[int] = None,
         **metadata,
     ) -> str:
-        """Log an LLM API call"""
+        """Log an LLM API call with structured or string prompts"""
+
+        # Handle both string and structured prompts
+        if isinstance(prompt, str):
+            input_data = {"prompt": prompt}
+        elif isinstance(prompt, dict):
+            input_data = prompt
+        else:
+            input_data = {"prompt": str(prompt)}  # fallback method
 
         # Create token usage object
         token_usage = None
@@ -50,7 +58,7 @@ class AgentLogger:
 
         return self._log_action(
             action_type="llm_call",
-            input_data={"prompt": prompt},
+            input_data=input_data,
             output_data={"response": response},
             model_name=model_name,
             token_count=token_count,
@@ -60,7 +68,7 @@ class AgentLogger:
 
     def log_llm_call_from_openai_response(
         self,
-        prompt: str,
+        prompt: Union[str, Dict[str, Any]],
         openai_response,
         **metadata,
     ) -> str:
@@ -78,9 +86,16 @@ class AgentLogger:
                 total_tokens=usage.total_tokens,
             )
 
+        if isinstance(prompt, str):
+            input_data = {"prompt": prompt}
+        elif isinstance(prompt, dict):
+            input_data = prompt
+        else:
+            input_data = {"prompt": str(prompt)}
+
         return self._log_action(
             action_type="llm_call",
-            input_data={"prompt": prompt},
+            input_data=input_data,
             output_data={"response": response_text},
             model_name=model_name,
             token_count=usage.total_tokens if usage else None,

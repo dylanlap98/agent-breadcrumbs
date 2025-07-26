@@ -54,13 +54,133 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
         """Called when LLM starts"""
         import time
 
+        # Extract the complete prompt including any tool responses
+        complete_prompt = self._extract_complete_prompt(prompts, kwargs)
+
         self.runs[str(run_id)] = {
             "prompts": prompts,
+            "complete_prompt": complete_prompt,
             "model_name": self._extract_model_name(serialized),
             "metadata": metadata or {},
             "tags": tags or [],
             "start_time": time.time(),
         }
+
+    def _extract_complete_prompt(
+        self, prompts: List[str], kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Extract the complete prompt including conversation history and tool responses"""
+
+        # Try to get the complete prompt from various LangChain sources
+        if prompts and len(prompts) > 0:
+            prompt_text = prompts[0]
+
+            # Check if this looks like it has tool responses
+            if "Tool:" in prompt_text or "tool_calls" in prompt_text.lower():
+                return self._parse_flat_prompt_to_structured(prompt_text)
+
+            # Check kwargs for additional context
+            if "invocation_params" in kwargs:
+                messages = kwargs["invocation_params"].get("messages", [])
+                if messages:
+                    return self._reconstruct_conversation(messages)
+
+            # Check for messages in kwargs directly
+            if "messages" in kwargs:
+                return self._reconstruct_conversation(kwargs["messages"])
+
+        # Fallback to original prompts
+        if prompts:
+            return self._parse_flat_prompt_to_structured(" ".join(prompts))
+        else:
+            return {"prompt": "Unknown prompt"}
+
+    def _parse_flat_prompt_to_structured(self, prompt_text: str) -> Dict[str, Any]:
+        """Parse a flat prompt string into structured format"""
+        structured = {}
+
+        parts = prompt_text.split("\n")
+        current_role = None
+        current_content = []
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            if part.startswith("System:"):
+                if current_role and current_content:
+                    structured[current_role] = "\n".join(current_content).strip()
+                current_role = "system"
+                current_content = [part[7:].strip()]  # Remove "System:"
+            elif part.startswith("Human:"):
+                if current_role and current_content:
+                    structured[current_role] = "\n".join(current_content).strip()
+                current_role = "human"
+                current_content = [part[6:].strip()]  # Remove "Human:"
+            elif part.startswith("AI:"):
+                if current_role and current_content:
+                    structured[current_role] = "\n".join(current_content).strip()
+                current_role = "ai"
+                current_content = [part[3:].strip()]  # Remove "AI:"
+            elif part.startswith("Tool:"):
+                if current_role and current_content:
+                    structured[current_role] = "\n".join(current_content).strip()
+                current_role = "tool"
+                current_content = [part[5:].strip()]  # Remove "Tool:"
+            else:
+                if current_content:
+                    current_content.append(part)
+                else:
+                    current_role = "human"
+                    current_content = [part]
+
+        if current_role and current_content:
+            structured[current_role] = "\n".join(current_content).strip()
+
+        return structured
+
+    def _reconstruct_conversation(
+        self, messages: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Reconstruct the full conversation from messages"""
+        structured = {}
+        ai_responses = []
+        tool_responses = []
+
+        for message in messages:
+            role = message.get("role", "unknown")
+            content = message.get("content", "")
+
+            if role == "system":
+                structured["system"] = content
+            elif role == "user" or role == "human":
+                structured["human"] = content
+            elif role == "assistant" or role == "ai":
+                ai_responses.append(content)
+
+                # Check for tool calls in the message
+                if "tool_calls" in message:
+                    for tool_call in message["tool_calls"]:
+                        if isinstance(tool_call, dict):
+                            tool_name = tool_call.get("function", {}).get(
+                                "name", "unknown_tool"
+                            )
+                            tool_args = tool_call.get("function", {}).get(
+                                "arguments", "{}"
+                            )
+                            ai_responses.append(f"Tool Call: {tool_name}({tool_args})")
+            elif role == "tool":
+                # This is a tool response
+                tool_responses.append(content)
+
+        if ai_responses:
+            structured["ai"] = "\n".join(filter(None, ai_responses))
+
+        if tool_responses:
+            structured["tool"] = "\n".join(tool_responses)
+
+        return structured
 
     def on_llm_end(
         self,
@@ -75,8 +195,8 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
 
         run_info = self.runs.get(str(run_id), {})
 
-        prompts = run_info.get("prompts", [])
-        prompt_text = " ".join(prompts) if prompts else "Unknown prompt"
+        # Use the complete prompt that includes tool responses
+        prompt_data = run_info.get("complete_prompt", {"prompt": "Unknown prompt"})
         response_text = self._extract_complete_response(response)
 
         model_name = self._extract_real_model_name(response, run_info)
@@ -98,7 +218,7 @@ class AgentBreadcrumbsCallback(BaseCallbackHandler):
 
         # Log the interaction
         self.logger.log_llm_call(
-            prompt=prompt_text,
+            prompt=prompt_data,
             response=response_text,
             model_name=model_name,
             prompt_tokens=prompt_tokens,

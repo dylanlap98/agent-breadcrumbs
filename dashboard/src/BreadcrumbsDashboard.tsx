@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 
 const Clock = ({ size = 16 }) => (
   <svg
@@ -137,6 +137,7 @@ const BreadcrumbsDashboard = () => {
   const [selectedFilePath, setSelectedFilePath] = useState<string>("");
   const [fileHandle, setFileHandle] = useState<any>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedSession, setSelectedSession] = useState<string | null>(null);
 
   const readLocalFile = (file: File): Promise<LogEntry[]> => {
     return new Promise((resolve, reject) => {
@@ -340,42 +341,304 @@ const BreadcrumbsDashboard = () => {
   };
 
   const extractUserInput = (inputData: string) => {
-    const parsed = parseJsonSafely(inputData);
-    const prompt = parsed.prompt || inputData || "";
+    console.log("Raw input data:", inputData);
 
-    // Extract human input from various formats
-    const humanMatch = prompt.match(/Human:\s*(.+?)(?=\n|$)/s);
-    if (humanMatch && humanMatch[1].trim()) {
-      return humanMatch[1].trim();
+    try {
+      // First try to parse as JSON
+      const parsed = JSON.parse(inputData);
+      console.log("Parsed as JSON:", parsed);
+
+      if (parsed.prompt) {
+        return parsed;
+      }
+    } catch (error) {
+      console.log("Standard JSON parsing failed, trying to fix format...");
+
+      try {
+        // Fix format like: {prompt: value, tool_responses: [1,2]}
+        // to: {"prompt": "value", "tool_responses": [1,2]}
+        let fixedJson = inputData
+          .replace(/\{(\w+):/g, '{"$1":') // {prompt: -> {"prompt":
+          .replace(/,\s*(\w+):/g, ', "$1":') // , tool_responses: -> , "tool_responses":
+          .replace(/:\s*([^,\[\]{}]+)(?=[,}])/g, ': "$1"') // : value -> : "value" (but not arrays/objects)
+          .replace(/:\s*(\[[^\]]+\])/g, ": $1"); // Keep arrays as-is
+
+        console.log("Fixed JSON:", fixedJson);
+
+        const parsed = JSON.parse(fixedJson);
+        console.log("Successfully parsed fixed JSON:", parsed);
+
+        return parsed;
+      } catch (fixError) {
+        console.log("Failed to fix JSON format:", fixError);
+
+        const result = { prompt: "Unknown input" };
+
+        const promptMatch = inputData.match(/prompt:\s*([^,}]+)/);
+        if (promptMatch) {
+          result.prompt = promptMatch[1].trim();
+        }
+
+        const toolMatch = inputData.match(/tool_responses:\s*\[([^\]]+)\]/);
+        if (toolMatch) {
+          const toolValues = toolMatch[1].split(",").map((v) => v.trim());
+          result.tool_responses = toolValues;
+        }
+
+        console.log("Manual parsing result:", result);
+        return result;
+      }
     }
 
-    const messageMatch = prompt.match(/content["\s]*:\s*["\s]*([^"\\]+)["\s]*/);
-    if (messageMatch && messageMatch[1].trim()) {
-      return messageMatch[1].trim();
+    return { prompt: inputData || "Unknown input" };
+  };
+
+  const renderStructuredInput = (inputData: any) => {
+    if (typeof inputData === "string") {
+      return inputData;
     }
 
-    const contentMatch = prompt.match(/"([^"]{10,})"/);
-    if (contentMatch && contentMatch[1].trim()) {
-      return contentMatch[1].trim();
+    if (typeof inputData === "object" && inputData !== null) {
+      const getFieldColor = (fieldName: string) => {
+        const colorMap = {
+          system: "#a78bfa", // Purple
+          human: "#60a5fa", // Blue
+          user: "#60a5fa", // Blue (alias for human)
+          prompt: "#60a5fa", // Blue
+          ai: "#34d399", // Green
+          assistant: "#34d399", // Green (alias for ai)
+          tool: "#fbbf24", // Yellow/Orange
+          tool_responses: "#34d399", // Green
+          tool_results: "#34d399", // Green
+        };
+
+        return colorMap[fieldName.toLowerCase()] || "#9ca3af"; // Default gray
+      };
+
+      const cleanText = (text: string) => {
+        return text.replace(/\\u([0-9a-fA-F]{4})/g, (match, code) =>
+          String.fromCharCode(parseInt(code, 16))
+        );
+      };
+
+      const specialFields = ["tool_responses", "tool_results"];
+      const regularFields = Object.keys(inputData).filter(
+        (key) => !specialFields.includes(key)
+      );
+
+      return (
+        <div>
+          {regularFields.map((fieldName) => {
+            const value = inputData[fieldName];
+
+            if (!value || (typeof value === "string" && value.trim() === "")) {
+              return null;
+            }
+
+            const displayValue =
+              typeof value === "string"
+                ? cleanText(value)
+                : JSON.stringify(value);
+
+            return (
+              <div key={fieldName} style={{ marginBottom: "8px" }}>
+                <span
+                  style={{ fontWeight: "600", color: getFieldColor(fieldName) }}
+                >
+                  {fieldName}
+                </span>
+                <span style={{ color: "#9ca3af" }}>: </span>
+                <span>{displayValue}</span>
+              </div>
+            );
+          })}
+
+          {/* Handle tool responses/results specially */}
+          {(inputData.tool_responses || inputData.tool_results) && (
+            <div>
+              <span style={{ fontWeight: "600", color: "#34d399" }}>
+                {inputData.tool_responses ? "tool responses" : "tool results"}
+              </span>
+              <span style={{ color: "#9ca3af" }}>: </span>
+              <span style={{ color: "#fbbf24" }}>
+                [
+                {(inputData.tool_responses || inputData.tool_results).join(
+                  ", "
+                )}
+                ]
+              </span>
+            </div>
+          )}
+        </div>
+      );
     }
 
-    return prompt.length > 20
-      ? prompt.substring(0, 100) + "..."
-      : "Unknown input";
+    return String(inputData);
   };
 
   const extractResponse = (outputData: string) => {
-    const parsed = parseJsonSafely(outputData);
-    let response = parsed.response || outputData || "";
+    try {
+      const parsed = JSON.parse(outputData);
 
-    // Clean up Unicode escapes
-    response = response
-      .replace(/\\u([0-9a-fA-F]{4})/g, (match, code) =>
-        String.fromCharCode(parseInt(code, 16))
-      )
-      .replace(/\\\\/g, "\\");
+      if (parsed.response) {
+        return { response: parsed.response };
+      }
 
-    return response || "No response";
+      return parsed;
+    } catch (error) {
+         try {
+         let fixedJson = outputData
+          .replace(/\{(\w+):/g, '{"$1":') // {response: -> {"response":
+          .replace(/,\s*(\w+):/g, ', "$1":') // , other_prop: -> , "other_prop":
+          .replace(/:\s*([^,\[\]{}]+)(?=[,}])/g, ': "$1"') // : value -> : "value" (but not arrays/objects)
+          .replace(/:\s*(\[[^\]]+\])/g, ": $1"); // Keep arrays as-is
+
+        const parsed = JSON.parse(fixedJson);
+
+        if (parsed.response) {
+          let cleanResponse = parsed.response;
+
+          cleanResponse = cleanResponse.replace(
+            /\\\\u([0-9a-fA-F]{4})/g,
+            (match, code) => {
+              return String.fromCharCode(parseInt(code, 16));
+            }
+          );
+
+          cleanResponse = cleanResponse.replace(
+            /\\u([0-9a-fA-F]{4})/g,
+            (match, code) => {
+              return String.fromCharCode(parseInt(code, 16));
+            }
+          );
+
+          cleanResponse = cleanResponse.replace(/\\\\/g, "\\");
+
+          return { response: cleanResponse };
+        }
+
+        return parsed;
+      } catch (fixError) {
+        const result = { response: "Unknown response" };
+
+        const responseMatch = outputData.match(/response:\s*(.+)$/);
+        if (responseMatch) {
+          let response = responseMatch[1].trim();
+
+          // Clean up Unicode escapes
+          response = response.replace(/\\u([0-9a-fA-F]{4})/g, (match, code) =>
+            String.fromCharCode(parseInt(code, 16))
+          );
+
+          result.response = response;
+        }
+
+        return result;
+      }
+    }
+  };
+
+  const renderStructuredResponse = (responseData: any) => {
+    if (typeof responseData === "string") {
+      const toolInfo = parseToolCalls(responseData);
+
+      if (toolInfo.hasTools) {
+        return (
+          <div>
+            <div style={{ marginBottom: "8px", color: "#fbbf24" }}>
+              🔧 Tool calls:
+            </div>
+            <ul style={{ margin: "0", paddingLeft: "20px", color: "#34d399" }}>
+              {toolInfo.tools.map((tool, index) => (
+                <li key={index} style={{ marginBottom: "4px" }}>
+                  <code
+                    style={{
+                      backgroundColor: "rgba(52, 211, 153, 0.1)",
+                      padding: "2px 6px",
+                      borderRadius: "4px",
+                      fontFamily: "monospace",
+                      fontSize: "13px",
+                    }}
+                  >
+                    {tool}
+                  </code>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      } else {
+        return responseData;
+      }
+    }
+
+    if (responseData.response) {
+      const toolInfo = parseToolCalls(responseData.response);
+
+      if (toolInfo.hasTools) {
+        return (
+          <div>
+            <div style={{ marginBottom: "8px", color: "#fbbf24" }}>
+              🔧 Tool calls:
+            </div>
+            <ul style={{ margin: "0", paddingLeft: "20px", color: "#34d399" }}>
+              {toolInfo.tools.map((tool, index) => (
+                <li key={index} style={{ marginBottom: "4px" }}>
+                  <code
+                    style={{
+                      backgroundColor: "rgba(52, 211, 153, 0.1)",
+                      padding: "2px 6px",
+                      borderRadius: "4px",
+                      fontFamily: "monospace",
+                      fontSize: "13px",
+                    }}
+                  >
+                    {tool}
+                  </code>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      } else {
+        return (
+          <div>
+            <span style={{ fontWeight: "600", color: "#60a5fa" }}>
+              response
+            </span>
+            <span style={{ color: "#9ca3af" }}>: </span>
+            <span>{responseData.response}</span>
+          </div>
+        );
+      }
+    }
+
+    return JSON.stringify(responseData);
+  };
+
+  const parseToolCalls = (response: string) => {
+    // Check if response contains tool calls
+    const toolPattern = /🔧\s*Decided to call tools?:\s*(.+)/;
+    const match = response.match(toolPattern);
+
+    if (match) {
+      const toolsText = match[1];
+
+      // Extract individual tool calls like: get_weather(city=London), convert_currency(amount=500, from_currency=USD, to_currency=GBP)
+      const toolCalls = toolsText.split(/,\s*(?=[a-zA-Z_][a-zA-Z0-9_]*\()/);
+
+      return {
+        hasTools: true,
+        tools: toolCalls.map((tool) => tool.trim()),
+        originalResponse: response,
+      };
+    }
+
+    return {
+      hasTools: false,
+      tools: [],
+      originalResponse: response,
+    };
   };
 
   const getTotalStats = () => {
@@ -392,6 +655,34 @@ const BreadcrumbsDashboard = () => {
 
     return { totalCost, totalTokens, avgDuration };
   };
+
+  const getSessionPreview = (sessionLogs: LogEntry[]) => {
+    // Find first LLM call to get user input preview
+    const firstLlmCall = sessionLogs.find(
+      (log) => log.action_type === "llm_call"
+    );
+    if (firstLlmCall) {
+      const userInputData = extractUserInput(firstLlmCall.input_data);
+
+      // Extract just the prompt for preview (truncate for sidebar)
+      const promptText =
+        typeof userInputData === "string"
+          ? userInputData
+          : userInputData.prompt || "Unknown input";
+      return promptText.length > 60
+        ? promptText.substring(0, 60) + "..."
+        : promptText;
+    }
+    return "No user input found";
+  };
+
+  // Auto-select first session when sessions load
+  useEffect(() => {
+    const sessionIds = Object.keys(sessions);
+    if (sessionIds.length > 0 && !selectedSession) {
+      setSelectedSession(sessionIds[0]);
+    }
+  }, [sessions, selectedSession]);
 
   const stats = getTotalStats();
 
@@ -797,106 +1088,113 @@ const BreadcrumbsDashboard = () => {
       )}
 
       {/* Main Content */}
-      <div style={{ maxWidth: "1280px", margin: "0 auto", padding: "24px" }}>
-        {isLoading ? (
+      <div style={{ display: "flex", height: "calc(100vh - 200px)" }}>
+        {/* Sidebar - Sessions List */}
+        {Object.entries(sessions).length > 0 && (
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              minHeight: "200px",
-              gap: "12px",
-              fontSize: "16px",
-              color: "#9ca3af",
+              width: "350px",
+              backgroundColor: "rgba(31, 41, 55, 0.3)",
+              borderRight: "1px solid #374151",
+              overflow: "auto",
+              flexShrink: 0,
             }}
           >
-            <RefreshCw
-              size={24}
-              style={{ animation: "spin 1s linear infinite" }}
-            />
-            Loading CSV data...
-          </div>
-        ) : Object.entries(sessions).length > 0 ? (
-          <div>
-            {Object.entries(sessions).map(([sessionId, sessionLogs]) => (
-              <div
-                key={sessionId}
+            <div style={{ padding: "16px", borderBottom: "1px solid #374151" }}>
+              <h3
                 style={{
-                  backgroundColor: "rgba(31, 41, 55, 0.3)",
-                  borderRadius: "12px",
-                  border: "1px solid #374151",
-                  overflow: "hidden",
-                  marginBottom: "24px",
+                  fontSize: "16px",
+                  fontWeight: "600",
+                  color: "#ffffff",
+                  margin: 0,
                 }}
               >
-                {/* Session Header */}
+                Sessions ({Object.keys(sessions).length})
+              </h3>
+            </div>
+
+            <div>
+              {Object.entries(sessions).map(([sessionId, sessionLogs]) => (
                 <div
+                  key={sessionId}
                   style={{
-                    backgroundColor: "rgba(31, 41, 55, 0.5)",
-                    padding: "16px 24px",
+                    padding: "16px",
                     borderBottom: "1px solid #374151",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    flexWrap: "wrap",
-                    gap: "12px",
+                    cursor: "pointer",
+                    backgroundColor:
+                      selectedSession === sessionId
+                        ? "rgba(96, 165, 250, 0.1)"
+                        : "transparent",
+                    borderLeft:
+                      selectedSession === sessionId
+                        ? "3px solid #60a5fa"
+                        : "3px solid transparent",
+                    transition: "all 0.2s",
+                  }}
+                  onClick={() => setSelectedSession(sessionId)}
+                  onMouseEnter={(e) => {
+                    if (selectedSession !== sessionId) {
+                      e.currentTarget.style.backgroundColor =
+                        "rgba(31, 41, 55, 0.3)";
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (selectedSession !== sessionId) {
+                      e.currentTarget.style.backgroundColor = "transparent";
+                    }
                   }}
                 >
-                  <div>
-                    <h3
-                      style={{
-                        fontSize: "18px",
-                        fontWeight: "600",
-                        color: "#ffffff",
-                        margin: "0 0 4px 0",
-                      }}
-                    >
-                      Session
-                    </h3>
-                    <p
+                  <div style={{ marginBottom: "8px" }}>
+                    <div
                       style={{
                         fontSize: "12px",
                         color: "#9ca3af",
                         fontFamily: "monospace",
-                        margin: 0,
+                        marginBottom: "4px",
                         wordBreak: "break-all",
                       }}
                     >
-                      {sessionId}
-                    </p>
-                  </div>
+                      {sessionId.substring(0, 20)}...
+                    </div>
 
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "16px",
-                      fontSize: "14px",
-                      flexWrap: "wrap",
-                    }}
-                  >
                     <div
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        color: "#9ca3af",
+                        fontSize: "14px",
+                        color: "#f9fafb",
+                        lineHeight: "1.4",
+                        marginBottom: "8px",
                       }}
                     >
-                      <Activity size={16} />
-                      <span>{sessionLogs.length} actions</span>
+                      {getSessionPreview(sessionLogs)}
                     </div>
 
                     <div
                       style={{
                         display: "flex",
                         alignItems: "center",
-                        gap: "6px",
+                        gap: "12px",
+                        fontSize: "12px",
                         color: "#9ca3af",
                       }}
                     >
-                      <DollarSign size={16} />
-                      <span>
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "4px",
+                        }}
+                      >
+                        <Activity size={12} />
+                        {sessionLogs.length}
+                      </span>
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "4px",
+                        }}
+                      >
+                        <DollarSign size={12} />
                         {formatCurrency(
                           sessionLogs.reduce(
                             (sum, log) => sum + (log.cost_usd || 0),
@@ -907,114 +1205,195 @@ const BreadcrumbsDashboard = () => {
                     </div>
                   </div>
                 </div>
+              ))}
+            </div>
+          </div>
+        )}
 
-                {/* Session Logs */}
-                <div>
-                  {sessionLogs.map((log) => (
+        {/* Main Content Area */}
+        <div style={{ flex: 1, overflow: "auto" }}>
+          <div style={{ padding: "24px" }}>
+            {isLoading ? (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  minHeight: "200px",
+                  gap: "12px",
+                  fontSize: "16px",
+                  color: "#9ca3af",
+                }}
+              >
+                <RefreshCw
+                  size={24}
+                  style={{ animation: "spin 1s linear infinite" }}
+                />
+                Loading CSV data...
+              </div>
+            ) : selectedSession && sessions[selectedSession] ? (
+              <div>
+                {/* Session Header */}
+                <div
+                  style={{
+                    backgroundColor: "rgba(31, 41, 55, 0.3)",
+                    borderRadius: "12px",
+                    border: "1px solid #374151",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      backgroundColor: "rgba(31, 41, 55, 0.5)",
+                      padding: "16px 24px",
+                      borderBottom: "1px solid #374151",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                      gap: "12px",
+                    }}
+                  >
+                    <div>
+                      <h3
+                        style={{
+                          fontSize: "18px",
+                          fontWeight: "600",
+                          color: "#ffffff",
+                          margin: "0 0 4px 0",
+                        }}
+                      >
+                        Session Details
+                      </h3>
+                      <p
+                        style={{
+                          fontSize: "12px",
+                          color: "#9ca3af",
+                          fontFamily: "monospace",
+                          margin: 0,
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        {selectedSession}
+                      </p>
+                    </div>
+
                     <div
-                      key={log.action_id}
                       style={{
-                        padding: "24px",
-                        borderBottom: "1px solid #374151",
                         display: "flex",
-                        alignItems: "flex-start",
+                        alignItems: "center",
                         gap: "16px",
-                        transition: "background-color 0.2s",
-                        backgroundColor:
-                          hoveredLog === log.action_id
-                            ? "rgba(31, 41, 55, 0.3)"
-                            : "transparent",
+                        fontSize: "14px",
+                        flexWrap: "wrap",
                       }}
-                      onMouseEnter={() => setHoveredLog(log.action_id)}
-                      onMouseLeave={() => setHoveredLog(null)}
                     >
-                      {/* Action Icon */}
                       <div
                         style={{
                           display: "flex",
                           alignItems: "center",
-                          justifyContent: "center",
-                          width: "40px",
-                          height: "40px",
-                          borderRadius: "8px",
-                          border: "1px solid",
-                          flexShrink: 0,
-                          color:
-                            log.action_type === "llm_call"
-                              ? "#60a5fa"
-                              : log.action_type === "tool_use"
-                              ? "#34d399"
-                              : "#a78bfa",
-                          backgroundColor:
-                            log.action_type === "llm_call"
-                              ? "rgba(96, 165, 250, 0.1)"
-                              : log.action_type === "tool_use"
-                              ? "rgba(52, 211, 153, 0.1)"
-                              : "rgba(167, 139, 250, 0.1)",
-                          borderColor:
-                            log.action_type === "llm_call"
-                              ? "rgba(96, 165, 250, 0.2)"
-                              : log.action_type === "tool_use"
-                              ? "rgba(52, 211, 153, 0.2)"
-                              : "rgba(167, 139, 250, 0.2)",
+                          gap: "6px",
+                          color: "#9ca3af",
                         }}
                       >
-                        {getActionIcon(log.action_type)}
+                        <Activity size={16} />
+                        <span>{sessions[selectedSession].length} actions</span>
                       </div>
 
-                      {/* Content */}
-                      <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          color: "#9ca3af",
+                        }}
+                      >
+                        <DollarSign size={16} />
+                        <span>
+                          {formatCurrency(
+                            sessions[selectedSession].reduce(
+                              (sum, log) => sum + (log.cost_usd || 0),
+                              0
+                            )
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Session Logs */}
+                  <div>
+                    {sessions[selectedSession].map((log) => (
+                      <div
+                        key={log.action_id}
+                        style={{
+                          padding: "24px",
+                          borderBottom: "1px solid #374151",
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: "16px",
+                          transition: "background-color 0.2s",
+                          backgroundColor:
+                            hoveredLog === log.action_id
+                              ? "rgba(31, 41, 55, 0.3)"
+                              : "transparent",
+                        }}
+                        onMouseEnter={() => setHoveredLog(log.action_id)}
+                        onMouseLeave={() => setHoveredLog(null)}
+                      >
+                        {/* Action Icon */}
                         <div
                           style={{
                             display: "flex",
                             alignItems: "center",
-                            justifyContent: "space-between",
-                            marginBottom: "12px",
-                            flexWrap: "wrap",
-                            gap: "8px",
+                            justifyContent: "center",
+                            width: "40px",
+                            height: "40px",
+                            borderRadius: "8px",
+                            border: "1px solid",
+                            flexShrink: 0,
+                            color:
+                              log.action_type === "llm_call"
+                                ? "#60a5fa"
+                                : log.action_type === "tool_use"
+                                ? "#34d399"
+                                : "#a78bfa",
+                            backgroundColor:
+                              log.action_type === "llm_call"
+                                ? "rgba(96, 165, 250, 0.1)"
+                                : log.action_type === "tool_use"
+                                ? "rgba(52, 211, 153, 0.1)"
+                                : "rgba(167, 139, 250, 0.1)",
+                            borderColor:
+                              log.action_type === "llm_call"
+                                ? "rgba(96, 165, 250, 0.2)"
+                                : log.action_type === "tool_use"
+                                ? "rgba(52, 211, 153, 0.2)"
+                                : "rgba(167, 139, 250, 0.2)",
                           }}
                         >
+                          {getActionIcon(log.action_type)}
+                        </div>
+
+                        {/* Content */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
                           <div
                             style={{
                               display: "flex",
                               alignItems: "center",
-                              gap: "8px",
+                              justifyContent: "space-between",
+                              marginBottom: "12px",
                               flexWrap: "wrap",
+                              gap: "8px",
                             }}
                           >
-                            <span
+                            <div
                               style={{
-                                display: "inline-flex",
+                                display: "flex",
                                 alignItems: "center",
-                                padding: "4px 8px",
-                                borderRadius: "12px",
-                                fontSize: "12px",
-                                fontWeight: "500",
-                                border: "1px solid",
-                                color:
-                                  log.action_type === "llm_call"
-                                    ? "#60a5fa"
-                                    : log.action_type === "tool_use"
-                                    ? "#34d399"
-                                    : "#9ca3af",
-                                backgroundColor:
-                                  log.action_type === "llm_call"
-                                    ? "rgba(96, 165, 250, 0.1)"
-                                    : log.action_type === "tool_use"
-                                    ? "rgba(52, 211, 153, 0.1)"
-                                    : "#374151",
-                                borderColor:
-                                  log.action_type === "llm_call"
-                                    ? "rgba(96, 165, 250, 0.2)"
-                                    : log.action_type === "tool_use"
-                                    ? "rgba(52, 211, 153, 0.2)"
-                                    : "#374151",
+                                gap: "8px",
+                                flexWrap: "wrap",
                               }}
                             >
-                              {log.action_type}
-                            </span>
-
-                            {log.model_name && (
                               <span
                                 style={{
                                   display: "inline-flex",
@@ -1024,161 +1403,215 @@ const BreadcrumbsDashboard = () => {
                                   fontSize: "12px",
                                   fontWeight: "500",
                                   border: "1px solid",
-                                  color: "#9ca3af",
-                                  backgroundColor: "#374151",
-                                  borderColor: "#374151",
+                                  color:
+                                    log.action_type === "llm_call"
+                                      ? "#60a5fa"
+                                      : log.action_type === "tool_use"
+                                      ? "#34d399"
+                                      : "#9ca3af",
+                                  backgroundColor:
+                                    log.action_type === "llm_call"
+                                      ? "rgba(96, 165, 250, 0.1)"
+                                      : log.action_type === "tool_use"
+                                      ? "rgba(52, 211, 153, 0.1)"
+                                      : "#374151",
+                                  borderColor:
+                                    log.action_type === "llm_call"
+                                      ? "rgba(96, 165, 250, 0.2)"
+                                      : log.action_type === "tool_use"
+                                      ? "rgba(52, 211, 153, 0.2)"
+                                      : "#374151",
                                 }}
                               >
-                                {log.model_name}
+                                {log.action_type}
                               </span>
+
+                              {log.model_name && (
+                                <span
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    padding: "4px 8px",
+                                    borderRadius: "12px",
+                                    fontSize: "12px",
+                                    fontWeight: "500",
+                                    border: "1px solid",
+                                    color: "#9ca3af",
+                                    backgroundColor: "#374151",
+                                    borderColor: "#374151",
+                                  }}
+                                >
+                                  {log.model_name}
+                                </span>
+                              )}
+                            </div>
+
+                            <div style={{ fontSize: "14px", color: "#9ca3af" }}>
+                              {formatTimestamp(log.timestamp)}
+                            </div>
+                          </div>
+
+                          {log.action_type === "llm_call" && (
+                            <div style={{ marginBottom: "16px" }}>
+                              <div style={{ marginBottom: "12px" }}>
+                                <p
+                                  style={{
+                                    fontSize: "14px",
+                                    fontWeight: "500",
+                                    color: "#9ca3af",
+                                    marginBottom: "4px",
+                                  }}
+                                >
+                                  Input:
+                                </p>
+                                <div
+                                  style={{
+                                    fontSize: "14px",
+                                    color: "#f9fafb",
+                                    backgroundColor: "rgba(31, 41, 55, 0.5)",
+                                    padding: "12px",
+                                    borderRadius: "8px",
+                                    border: "1px solid #374151",
+                                    lineHeight: "1.5",
+                                    wordBreak: "break-word",
+                                  }}
+                                >
+                                  {renderStructuredInput(
+                                    extractUserInput(log.input_data)
+                                  )}
+                                </div>
+                              </div>
+
+                              <div style={{ marginBottom: "12px" }}>
+                                <p
+                                  style={{
+                                    fontSize: "14px",
+                                    fontWeight: "500",
+                                    color: "#9ca3af",
+                                    marginBottom: "4px",
+                                  }}
+                                >
+                                  Response:
+                                </p>
+                                <div
+                                  style={{
+                                    fontSize: "14px",
+                                    color: "#f9fafb",
+                                    backgroundColor: "rgba(31, 41, 55, 0.5)",
+                                    padding: "12px",
+                                    borderRadius: "8px",
+                                    border: "1px solid #374151",
+                                    lineHeight: "1.5",
+                                    wordBreak: "break-word",
+                                  }}
+                                >
+                                  {renderStructuredResponse(
+                                    extractResponse(log.output_data)
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Metrics */}
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "20px",
+                              fontSize: "14px",
+                              color: "#9ca3af",
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            {log.total_tokens && (
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                }}
+                              >
+                                <Zap size={16} />
+                                <span>
+                                  {log.prompt_tokens}→{log.completion_tokens} (
+                                  {log.total_tokens} total)
+                                </span>
+                              </div>
+                            )}
+
+                            {log.cost_usd && (
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                }}
+                              >
+                                <DollarSign size={16} />
+                                <span>{formatCurrency(log.cost_usd)}</span>
+                              </div>
+                            )}
+
+                            {log.duration_ms && (
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                }}
+                              >
+                                <Clock size={16} />
+                                <span>{formatDuration(log.duration_ms)}</span>
+                              </div>
                             )}
                           </div>
-
-                          <div style={{ fontSize: "14px", color: "#9ca3af" }}>
-                            {formatTimestamp(log.timestamp)}
-                          </div>
-                        </div>
-
-                        {log.action_type === "llm_call" && (
-                          <div style={{ marginBottom: "16px" }}>
-                            <div style={{ marginBottom: "12px" }}>
-                              <p
-                                style={{
-                                  fontSize: "14px",
-                                  fontWeight: "500",
-                                  color: "#9ca3af",
-                                  marginBottom: "4px",
-                                }}
-                              >
-                                Input:
-                              </p>
-                              <p
-                                style={{
-                                  fontSize: "14px",
-                                  color: "#f9fafb",
-                                  backgroundColor: "rgba(31, 41, 55, 0.5)",
-                                  padding: "12px",
-                                  borderRadius: "8px",
-                                  border: "1px solid #374151",
-                                  lineHeight: "1.5",
-                                  wordBreak: "break-word",
-                                }}
-                              >
-                                {extractUserInput(log.input_data)}
-                              </p>
-                            </div>
-
-                            <div style={{ marginBottom: "12px" }}>
-                              <p
-                                style={{
-                                  fontSize: "14px",
-                                  fontWeight: "500",
-                                  color: "#9ca3af",
-                                  marginBottom: "4px",
-                                }}
-                              >
-                                Response:
-                              </p>
-                              <p
-                                style={{
-                                  fontSize: "14px",
-                                  color: "#f9fafb",
-                                  backgroundColor: "rgba(31, 41, 55, 0.5)",
-                                  padding: "12px",
-                                  borderRadius: "8px",
-                                  border: "1px solid #374151",
-                                  lineHeight: "1.5",
-                                  wordBreak: "break-word",
-                                }}
-                              >
-                                {extractResponse(log.output_data)}
-                              </p>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Metrics */}
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "20px",
-                            fontSize: "14px",
-                            color: "#9ca3af",
-                            flexWrap: "wrap",
-                          }}
-                        >
-                          {log.total_tokens && (
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "4px",
-                              }}
-                            >
-                              <Zap size={16} />
-                              <span>
-                                {log.prompt_tokens}→{log.completion_tokens} (
-                                {log.total_tokens} total)
-                              </span>
-                            </div>
-                          )}
-
-                          {log.cost_usd && (
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "4px",
-                              }}
-                            >
-                              <DollarSign size={16} />
-                              <span>{formatCurrency(log.cost_usd)}</span>
-                            </div>
-                          )}
-
-                          {log.duration_ms && (
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "4px",
-                              }}
-                            >
-                              <Clock size={16} />
-                              <span>{formatDuration(log.duration_ms)}</span>
-                            </div>
-                          )}
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               </div>
-            ))}
+            ) : Object.entries(sessions).length === 0 ? (
+              <div style={{ textAlign: "center", padding: "60px 20px" }}>
+                <Upload
+                  size={48}
+                  color="#6b7280"
+                  style={{ margin: "0 auto 16px" }}
+                />
+                <h3
+                  style={{
+                    fontSize: "18px",
+                    fontWeight: "500",
+                    color: "#9ca3af",
+                    margin: "16px 0 8px 0",
+                  }}
+                >
+                  No CSV file selected
+                </h3>
+                <p style={{ color: "#6b7280", margin: 0 }}>
+                  Click "Select CSV File" above to load your agent breadcrumbs
+                </p>
+              </div>
+            ) : (
+              <div style={{ textAlign: "center", padding: "60px 20px" }}>
+                <h3
+                  style={{
+                    fontSize: "18px",
+                    fontWeight: "500",
+                    color: "#9ca3af",
+                    margin: "16px 0 8px 0",
+                  }}
+                >
+                  Select a session
+                </h3>
+                <p style={{ color: "#6b7280", margin: 0 }}>
+                  Choose a session from the sidebar to view its details
+                </p>
+              </div>
+            )}
           </div>
-        ) : (
-          <div style={{ textAlign: "center", padding: "60px 20px" }}>
-            <Upload
-              size={48}
-              color="#6b7280"
-              style={{ margin: "0 auto 16px" }}
-            />
-            <h3
-              style={{
-                fontSize: "18px",
-                fontWeight: "500",
-                color: "#9ca3af",
-                margin: "16px 0 8px 0",
-              }}
-            >
-              No CSV file selected
-            </h3>
-            <p style={{ color: "#6b7280", margin: 0 }}>
-              Click "Select CSV File" above to load your agent breadcrumbs
-            </p>
-          </div>
-        )}
+        </div>
       </div>
 
       <style>{`
