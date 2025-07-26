@@ -1,131 +1,10 @@
 import React, { useState, useEffect } from "react";
+import { Clock, Zap, DollarSign, Activity, RefreshCw, Upload } from "./components/Icons";
+import { extractUserInput, renderStructuredInput, extractResponse, renderStructuredResponse } from "./utils/parseUtils";
+import { formatTimestamp, formatCurrency, formatDuration, getActionIcon, getTotalStats, getSessionPreview } from "./utils/statsUtils";
+import type { LogEntry } from "./utils/csvReader";
+import "./BreadcrumbsDashboard.css";
 
-const Clock = ({ size = 16 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-  >
-    <circle cx="12" cy="12" r="10" />
-    <polyline points="12,6 12,12 16,14" />
-  </svg>
-);
-
-const Zap = ({ size = 16 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-  >
-    <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2" />
-  </svg>
-);
-
-const DollarSign = ({ size = 16 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-  >
-    <line x1="12" y1="1" x2="12" y2="23" />
-    <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-  </svg>
-);
-
-const MessageSquare = ({ size = 16 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-  >
-    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-  </svg>
-);
-
-const Wrench = ({ size = 16 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-  >
-    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-  </svg>
-);
-
-const Activity = ({ size = 16 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-  >
-    <polyline points="22,12 18,12 15,21 9,3 6,12 2,12" />
-  </svg>
-);
-
-const RefreshCw = ({ size = 16, style = {} }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    style={style}
-  >
-    <polyline points="23,4 23,10 17,10" />
-    <polyline points="1,20 1,14 7,14" />
-    <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
-  </svg>
-);
-
-const Upload = ({ size = 16 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-  >
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-    <polyline points="7,10 12,5 17,10" />
-    <line x1="12" y1="5" x2="12" y2="15" />
-  </svg>
-);
-
-interface LogEntry {
-  action_id: string;
-  session_id: string;
-  timestamp: string;
-  action_type: string;
-  input_data: string;
-  output_data: string;
-  model_name: string;
-  prompt_tokens: number | null;
-  completion_tokens: number | null;
-  total_tokens: number | null;
-  cost_usd: number | null;
-  duration_ms: number | null;
-  metadata: string;
-}
 
 const BreadcrumbsDashboard = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -135,7 +14,7 @@ const BreadcrumbsDashboard = () => {
   const [hoveredLog, setHoveredLog] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string>("");
-  const [fileHandle, setFileHandle] = useState<any>(null);
+  const [fileHandle, setFileHandle] = useState<FileSystemFileHandle | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
 
@@ -154,8 +33,8 @@ const BreadcrumbsDashboard = () => {
             .split(",")
             .map((h) => h.trim().replace(/"/g, ""));
 
-          const logs: LogEntry[] = lines.slice(1).map((line) => {
-            const values = [];
+            const logs: LogEntry[] = lines.slice(1).map((line) => {
+              const values: string[] = [];
             let current = "";
             let inQuotes = false;
 
@@ -172,26 +51,27 @@ const BreadcrumbsDashboard = () => {
             }
             values.push(current.trim());
 
-            const logEntry: any = {};
-            headers.forEach((header, index) => {
-              let value = values[index] || "";
+              const logEntry: Partial<LogEntry> = {};
+              const entry = logEntry as Record<string, string | number | null>;
+              headers.forEach((header, index) => {
+                let value = values[index] || "";
               value = value.replace(/^"|"$/g, "");
 
-              switch (header) {
-                case "prompt_tokens":
-                case "completion_tokens":
-                case "total_tokens":
-                  logEntry[header] =
-                    value && value !== "" ? parseInt(value) : null;
-                  break;
-                case "cost_usd":
-                case "duration_ms":
-                  logEntry[header] =
-                    value && value !== "" ? parseFloat(value) : null;
-                  break;
-                default:
-                  logEntry[header] = value;
-              }
+                switch (header) {
+                  case "prompt_tokens":
+                  case "completion_tokens":
+                  case "total_tokens":
+                    entry[header] =
+                      value && value !== "" ? parseInt(value) : null;
+                    break;
+                  case "cost_usd":
+                  case "duration_ms":
+                    entry[header] =
+                      value && value !== "" ? parseFloat(value) : null;
+                    break;
+                  default:
+                    entry[header] = value;
+                }
             });
 
             return logEntry as LogEntry;
@@ -225,15 +105,19 @@ const BreadcrumbsDashboard = () => {
       if (supportsTrueRefresh) {
         try {
           console.log("Auto-enabling true refresh for Chrome/Edge...");
-          const [handle] = await (window as any).showOpenFilePicker({
-            types: [
-              {
-                description: "CSV files",
-                accept: { "text/csv": [".csv"] },
-              },
-            ],
-            multiple: false,
-          });
+          const [handle] = await (
+            (window as unknown as Window & {
+              showOpenFilePicker: (options: unknown) => Promise<FileSystemFileHandle[]>;
+            }).showOpenFilePicker({
+              types: [
+                {
+                  description: "CSV files",
+                  accept: { "text/csv": [".csv"] },
+                },
+              ],
+              multiple: false,
+            })
+          );
 
           setFileHandle(handle);
           const handleFile = await handle.getFile();
@@ -242,7 +126,7 @@ const BreadcrumbsDashboard = () => {
           await loadDataFromFile(handleFile);
           console.log("True refresh enabled automatically!");
           return;
-        } catch (error) {
+        } catch {
           console.log("User cancelled file handle request, using basic mode");
         }
       }
@@ -308,374 +192,6 @@ const BreadcrumbsDashboard = () => {
       setIsRefreshing(false);
     }
   };
-
-  const formatTimestamp = (timestamp: string) => {
-    return new Date(timestamp).toLocaleString();
-  };
-
-  const formatCurrency = (amount: number | null) => {
-    return amount ? `$${amount.toFixed(6)}` : "N/A";
-  };
-
-  const formatDuration = (ms: number | null) => {
-    return ms ? `${ms.toFixed(0)}ms` : "N/A";
-  };
-
-  const getActionIcon = (actionType: string) => {
-    switch (actionType) {
-      case "llm_call":
-        return <MessageSquare size={16} />;
-      case "tool_use":
-        return <Wrench size={16} />;
-      default:
-        return <Activity size={16} />;
-    }
-  };
-
-  const parseJsonSafely = (jsonString: string) => {
-    try {
-      return JSON.parse(jsonString);
-    } catch {
-      return {};
-    }
-  };
-
-  const extractUserInput = (inputData: string) => {
-    console.log("Raw input data:", inputData);
-
-    try {
-      // First try to parse as JSON
-      const parsed = JSON.parse(inputData);
-      console.log("Parsed as JSON:", parsed);
-
-      if (parsed.prompt) {
-        return parsed;
-      }
-    } catch (error) {
-      console.log("Standard JSON parsing failed, trying to fix format...");
-
-      try {
-        // Fix format like: {prompt: value, tool_responses: [1,2]}
-        // to: {"prompt": "value", "tool_responses": [1,2]}
-        let fixedJson = inputData
-          .replace(/\{(\w+):/g, '{"$1":') // {prompt: -> {"prompt":
-          .replace(/,\s*(\w+):/g, ', "$1":') // , tool_responses: -> , "tool_responses":
-          .replace(/:\s*([^,\[\]{}]+)(?=[,}])/g, ': "$1"') // : value -> : "value" (but not arrays/objects)
-          .replace(/:\s*(\[[^\]]+\])/g, ": $1"); // Keep arrays as-is
-
-        console.log("Fixed JSON:", fixedJson);
-
-        const parsed = JSON.parse(fixedJson);
-        console.log("Successfully parsed fixed JSON:", parsed);
-
-        return parsed;
-      } catch (fixError) {
-        console.log("Failed to fix JSON format:", fixError);
-
-        const result = { prompt: "Unknown input" };
-
-        const promptMatch = inputData.match(/prompt:\s*([^,}]+)/);
-        if (promptMatch) {
-          result.prompt = promptMatch[1].trim();
-        }
-
-        const toolMatch = inputData.match(/tool_responses:\s*\[([^\]]+)\]/);
-        if (toolMatch) {
-          const toolValues = toolMatch[1].split(",").map((v) => v.trim());
-          result.tool_responses = toolValues;
-        }
-
-        console.log("Manual parsing result:", result);
-        return result;
-      }
-    }
-
-    return { prompt: inputData || "Unknown input" };
-  };
-
-  const renderStructuredInput = (inputData: any) => {
-    if (typeof inputData === "string") {
-      return inputData;
-    }
-
-    if (typeof inputData === "object" && inputData !== null) {
-      const getFieldColor = (fieldName: string) => {
-        const colorMap = {
-          system: "#a78bfa", // Purple
-          human: "#60a5fa", // Blue
-          user: "#60a5fa", // Blue (alias for human)
-          prompt: "#60a5fa", // Blue
-          ai: "#34d399", // Green
-          assistant: "#34d399", // Green (alias for ai)
-          tool: "#fbbf24", // Yellow/Orange
-          tool_responses: "#34d399", // Green
-          tool_results: "#34d399", // Green
-        };
-
-        return colorMap[fieldName.toLowerCase()] || "#9ca3af"; // Default gray
-      };
-
-      const cleanText = (text: string) => {
-        return text.replace(/\\u([0-9a-fA-F]{4})/g, (match, code) =>
-          String.fromCharCode(parseInt(code, 16))
-        );
-      };
-
-      const specialFields = ["tool_responses", "tool_results"];
-      const regularFields = Object.keys(inputData).filter(
-        (key) => !specialFields.includes(key)
-      );
-
-      return (
-        <div>
-          {regularFields.map((fieldName) => {
-            const value = inputData[fieldName];
-
-            if (!value || (typeof value === "string" && value.trim() === "")) {
-              return null;
-            }
-
-            const displayValue =
-              typeof value === "string"
-                ? cleanText(value)
-                : JSON.stringify(value);
-
-            return (
-              <div key={fieldName} style={{ marginBottom: "8px" }}>
-                <span
-                  style={{ fontWeight: "600", color: getFieldColor(fieldName) }}
-                >
-                  {fieldName}
-                </span>
-                <span style={{ color: "#9ca3af" }}>: </span>
-                <span>{displayValue}</span>
-              </div>
-            );
-          })}
-
-          {/* Handle tool responses/results specially */}
-          {(inputData.tool_responses || inputData.tool_results) && (
-            <div>
-              <span style={{ fontWeight: "600", color: "#34d399" }}>
-                {inputData.tool_responses ? "tool responses" : "tool results"}
-              </span>
-              <span style={{ color: "#9ca3af" }}>: </span>
-              <span style={{ color: "#fbbf24" }}>
-                [
-                {(inputData.tool_responses || inputData.tool_results).join(
-                  ", "
-                )}
-                ]
-              </span>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    return String(inputData);
-  };
-
-  const extractResponse = (outputData: string) => {
-    try {
-      const parsed = JSON.parse(outputData);
-
-      if (parsed.response) {
-        return { response: parsed.response };
-      }
-
-      return parsed;
-    } catch (error) {
-         try {
-         let fixedJson = outputData
-          .replace(/\{(\w+):/g, '{"$1":') // {response: -> {"response":
-          .replace(/,\s*(\w+):/g, ', "$1":') // , other_prop: -> , "other_prop":
-          .replace(/:\s*([^,\[\]{}]+)(?=[,}])/g, ': "$1"') // : value -> : "value" (but not arrays/objects)
-          .replace(/:\s*(\[[^\]]+\])/g, ": $1"); // Keep arrays as-is
-
-        const parsed = JSON.parse(fixedJson);
-
-        if (parsed.response) {
-          let cleanResponse = parsed.response;
-
-          cleanResponse = cleanResponse.replace(
-            /\\\\u([0-9a-fA-F]{4})/g,
-            (match, code) => {
-              return String.fromCharCode(parseInt(code, 16));
-            }
-          );
-
-          cleanResponse = cleanResponse.replace(
-            /\\u([0-9a-fA-F]{4})/g,
-            (match, code) => {
-              return String.fromCharCode(parseInt(code, 16));
-            }
-          );
-
-          cleanResponse = cleanResponse.replace(/\\\\/g, "\\");
-
-          return { response: cleanResponse };
-        }
-
-        return parsed;
-      } catch (fixError) {
-        const result = { response: "Unknown response" };
-
-        const responseMatch = outputData.match(/response:\s*(.+)$/);
-        if (responseMatch) {
-          let response = responseMatch[1].trim();
-
-          // Clean up Unicode escapes
-          response = response.replace(/\\u([0-9a-fA-F]{4})/g, (match, code) =>
-            String.fromCharCode(parseInt(code, 16))
-          );
-
-          result.response = response;
-        }
-
-        return result;
-      }
-    }
-  };
-
-  const renderStructuredResponse = (responseData: any) => {
-    if (typeof responseData === "string") {
-      const toolInfo = parseToolCalls(responseData);
-
-      if (toolInfo.hasTools) {
-        return (
-          <div>
-            <div style={{ marginBottom: "8px", color: "#fbbf24" }}>
-              🔧 Tool calls:
-            </div>
-            <ul style={{ margin: "0", paddingLeft: "20px", color: "#34d399" }}>
-              {toolInfo.tools.map((tool, index) => (
-                <li key={index} style={{ marginBottom: "4px" }}>
-                  <code
-                    style={{
-                      backgroundColor: "rgba(52, 211, 153, 0.1)",
-                      padding: "2px 6px",
-                      borderRadius: "4px",
-                      fontFamily: "monospace",
-                      fontSize: "13px",
-                    }}
-                  >
-                    {tool}
-                  </code>
-                </li>
-              ))}
-            </ul>
-          </div>
-        );
-      } else {
-        return responseData;
-      }
-    }
-
-    if (responseData.response) {
-      const toolInfo = parseToolCalls(responseData.response);
-
-      if (toolInfo.hasTools) {
-        return (
-          <div>
-            <div style={{ marginBottom: "8px", color: "#fbbf24" }}>
-              🔧 Tool calls:
-            </div>
-            <ul style={{ margin: "0", paddingLeft: "20px", color: "#34d399" }}>
-              {toolInfo.tools.map((tool, index) => (
-                <li key={index} style={{ marginBottom: "4px" }}>
-                  <code
-                    style={{
-                      backgroundColor: "rgba(52, 211, 153, 0.1)",
-                      padding: "2px 6px",
-                      borderRadius: "4px",
-                      fontFamily: "monospace",
-                      fontSize: "13px",
-                    }}
-                  >
-                    {tool}
-                  </code>
-                </li>
-              ))}
-            </ul>
-          </div>
-        );
-      } else {
-        return (
-          <div>
-            <span style={{ fontWeight: "600", color: "#60a5fa" }}>
-              response
-            </span>
-            <span style={{ color: "#9ca3af" }}>: </span>
-            <span>{responseData.response}</span>
-          </div>
-        );
-      }
-    }
-
-    return JSON.stringify(responseData);
-  };
-
-  const parseToolCalls = (response: string) => {
-    // Check if response contains tool calls
-    const toolPattern = /🔧\s*Decided to call tools?:\s*(.+)/;
-    const match = response.match(toolPattern);
-
-    if (match) {
-      const toolsText = match[1];
-
-      // Extract individual tool calls like: get_weather(city=London), convert_currency(amount=500, from_currency=USD, to_currency=GBP)
-      const toolCalls = toolsText.split(/,\s*(?=[a-zA-Z_][a-zA-Z0-9_]*\()/);
-
-      return {
-        hasTools: true,
-        tools: toolCalls.map((tool) => tool.trim()),
-        originalResponse: response,
-      };
-    }
-
-    return {
-      hasTools: false,
-      tools: [],
-      originalResponse: response,
-    };
-  };
-
-  const getTotalStats = () => {
-    const totalCost = logs.reduce((sum, log) => sum + (log.cost_usd || 0), 0);
-    const totalTokens = logs.reduce(
-      (sum, log) => sum + (log.total_tokens || 0),
-      0
-    );
-    const avgDuration =
-      logs.length > 0
-        ? logs.reduce((sum, log) => sum + (log.duration_ms || 0), 0) /
-          logs.length
-        : 0;
-
-    return { totalCost, totalTokens, avgDuration };
-  };
-
-  const getSessionPreview = (sessionLogs: LogEntry[]) => {
-    // Find first LLM call to get user input preview
-    const firstLlmCall = sessionLogs.find(
-      (log) => log.action_type === "llm_call"
-    );
-    if (firstLlmCall) {
-      const userInputData = extractUserInput(firstLlmCall.input_data);
-
-      // Extract just the prompt for preview (truncate for sidebar)
-      const promptText =
-        typeof userInputData === "string"
-          ? userInputData
-          : userInputData.prompt || "Unknown input";
-      return promptText.length > 60
-        ? promptText.substring(0, 60) + "..."
-        : promptText;
-    }
-    return "No user input found";
-  };
-
   // Auto-select first session when sessions load
   useEffect(() => {
     const sessionIds = Object.keys(sessions);
@@ -684,7 +200,7 @@ const BreadcrumbsDashboard = () => {
     }
   }, [sessions, selectedSession]);
 
-  const stats = getTotalStats();
+  const stats = getTotalStats(logs);
 
   return (
     <div
@@ -1165,7 +681,7 @@ const BreadcrumbsDashboard = () => {
                         marginBottom: "8px",
                       }}
                     >
-                      {getSessionPreview(sessionLogs)}
+                      {getSessionPreview(sessionLogs, extractUserInput)}
                     </div>
 
                     <div
@@ -1614,12 +1130,6 @@ const BreadcrumbsDashboard = () => {
         </div>
       </div>
 
-      <style>{`
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   );
 };
