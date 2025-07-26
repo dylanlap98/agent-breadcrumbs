@@ -30,7 +30,7 @@ export interface LogEntry {
       
       const logs: LogEntry[] = lines.slice(1).map(line => {
         // Handle CSV with quotes and commas
-        const values = [];
+        const values: string[] = [];
         let current = '';
         let inQuotes = false;
         
@@ -48,22 +48,23 @@ export interface LogEntry {
         values.push(current.trim()); // Don't forget the last value
         
         const logEntry: Partial<LogEntry> = {};
+        const entry = logEntry as Record<string, string | number | null>;
         headers.forEach((header, index) => {
-          const value = values[index] || '';
+          const value = values[index] ?? '';
           
           // Parse specific fields
           switch (header) {
             case 'prompt_tokens':
             case 'completion_tokens':
             case 'total_tokens':
-              logEntry[header] = value ? parseInt(value) : null;
+              entry[header] = value ? parseInt(value) : null;
               break;
             case 'cost_usd':
             case 'duration_ms':
-              logEntry[header] = value ? parseFloat(value) : null;
+              entry[header] = value ? parseFloat(value) : null;
               break;
             default:
-              logEntry[header] = value.replace(/^"|"$/g, ''); // Remove surrounding quotes
+              entry[header] = value.replace(/^"|"$/g, ''); // Remove surrounding quotes
           }
         });
         

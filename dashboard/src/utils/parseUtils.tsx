@@ -6,7 +6,7 @@ export const parseJsonSafely = (jsonString: string) => {
   }
 };
 
-export const extractUserInput = (inputData: string) => {
+export const extractUserInput = (inputData: string): Record<string, unknown> => {
   try {
     const parsed = JSON.parse(inputData);
     if (parsed.prompt) {
@@ -42,6 +42,7 @@ export const renderStructuredInput = (inputData: Record<string, unknown> | strin
   if (typeof inputData === "string") return inputData;
 
   if (typeof inputData === "object" && inputData !== null) {
+    const data = inputData as Record<string, unknown>;
     const getFieldColor = (fieldName: string) => {
       const colorMap: Record<string, string> = {
         system: "#a78bfa",
@@ -63,14 +64,17 @@ export const renderStructuredInput = (inputData: Record<string, unknown> | strin
       );
 
     const specialFields = ["tool_responses", "tool_results"];
-    const regularFields = Object.keys(inputData).filter(
+    const regularFields = Object.keys(data).filter(
       (key) => !specialFields.includes(key)
     );
+    const toolResponses = data.tool_responses as unknown as string[] | undefined;
+    const toolResults = data.tool_results as unknown as string[] | undefined;
 
     return (
       <div>
         {regularFields.map((fieldName) => {
-          const value = inputData[fieldName];
+          const record = data as Record<string, unknown>;
+          const value = record[fieldName];
           if (!value || (typeof value === "string" && value.trim() === "")) {
             return null;
           }
@@ -86,15 +90,15 @@ export const renderStructuredInput = (inputData: Record<string, unknown> | strin
             </div>
           );
         })}
-        {(inputData.tool_responses || inputData.tool_results) && (
+        {(toolResponses || toolResults) && (
           <div>
             <span style={{ fontWeight: "600", color: "#34d399" }}>
-              {inputData.tool_responses ? "tool responses" : "tool results"}
+              {toolResponses ? "tool responses" : "tool results"}
             </span>
             <span style={{ color: "#9ca3af" }}>: </span>
             <span style={{ color: "#fbbf24" }}>
               [
-              {(inputData.tool_responses || inputData.tool_results).join(
+              {(toolResponses || toolResults)?.join(
                 ", "
               )}
               ]
@@ -136,11 +140,13 @@ export const extractResponse = (outputData: string) => {
       const parsed = JSON.parse(fixedJson);
       if (parsed.response) {
         let cleanResponse = parsed.response;
-        cleanResponse = cleanResponse.replace(/\\\\u([0-9a-fA-F]{4})/g, (_, c) =>
-          String.fromCharCode(parseInt(c, 16))
+        cleanResponse = cleanResponse.replace(
+          /\\\\u([0-9a-fA-F]{4})/g,
+          (_: string, c: string) => String.fromCharCode(parseInt(c, 16))
         );
-        cleanResponse = cleanResponse.replace(/\\u([0-9a-fA-F]{4})/g, (_, c) =>
-          String.fromCharCode(parseInt(c, 16))
+        cleanResponse = cleanResponse.replace(
+          /\\u([0-9a-fA-F]{4})/g,
+          (_: string, c: string) => String.fromCharCode(parseInt(c, 16))
         );
         cleanResponse = cleanResponse.replace(/\\\\/g, "\\");
         return { response: cleanResponse };
@@ -187,8 +193,10 @@ export const renderStructuredResponse = (
     return responseData;
   }
 
-  if (responseData.response) {
-    const toolInfo = parseToolCalls(responseData.response);
+  if ((responseData as Record<string, unknown>).response) {
+    const respObj = responseData as Record<string, unknown>;
+    const responseText = String(respObj.response);
+    const toolInfo = parseToolCalls(responseText);
     if (toolInfo.hasTools) {
       return (
         <div>
@@ -209,7 +217,7 @@ export const renderStructuredResponse = (
       <div>
         <span style={{ fontWeight: "600", color: "#60a5fa" }}>response</span>
         <span style={{ color: "#9ca3af" }}>: </span>
-        <span>{responseData.response}</span>
+        <span>{responseText}</span>
       </div>
     );
   }

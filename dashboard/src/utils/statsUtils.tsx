@@ -1,5 +1,5 @@
 import { MessageSquare, Wrench, Activity } from "../components/Icons";
-import { LogEntry } from "./csvReader";
+import type { LogEntry } from "./csvReader";
 
 export const formatTimestamp = (timestamp: string) => {
   return new Date(timestamp).toLocaleString();
@@ -40,11 +40,13 @@ export const getSessionPreview = (
 ) => {
   const firstLlmCall = sessionLogs.find((log) => log.action_type === "llm_call");
   if (firstLlmCall) {
-    const userInputData = extractUserInput(firstLlmCall.input_data);
+    const userInputData = extractUserInput(firstLlmCall.input_data) as
+      | string
+      | Record<string, unknown>;
     const promptText =
       typeof userInputData === "string"
         ? userInputData
-        : userInputData.prompt || "Unknown input";
+        : (userInputData.prompt as string | undefined) || "Unknown input";
     return promptText.length > 60
       ? promptText.substring(0, 60) + "..."
       : promptText;

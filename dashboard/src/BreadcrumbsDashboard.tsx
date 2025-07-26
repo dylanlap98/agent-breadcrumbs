@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Clock, Zap, DollarSign, Activity, RefreshCw, Upload } from "./components/Icons";
 import { extractUserInput, renderStructuredInput, extractResponse, renderStructuredResponse } from "./utils/parseUtils";
 import { formatTimestamp, formatCurrency, formatDuration, getActionIcon, getTotalStats, getSessionPreview } from "./utils/statsUtils";
-import { LogEntry } from "./utils/csvReader";
+import type { LogEntry } from "./utils/csvReader";
 import "./BreadcrumbsDashboard.css";
 
 
@@ -33,8 +33,8 @@ const BreadcrumbsDashboard = () => {
             .split(",")
             .map((h) => h.trim().replace(/"/g, ""));
 
-          const logs: LogEntry[] = lines.slice(1).map((line) => {
-            const values = [];
+            const logs: LogEntry[] = lines.slice(1).map((line) => {
+              const values: string[] = [];
             let current = "";
             let inQuotes = false;
 
@@ -51,26 +51,27 @@ const BreadcrumbsDashboard = () => {
             }
             values.push(current.trim());
 
-            const logEntry: Partial<LogEntry> = {};
-            headers.forEach((header, index) => {
-              let value = values[index] || "";
+              const logEntry: Partial<LogEntry> = {};
+              const entry = logEntry as Record<string, string | number | null>;
+              headers.forEach((header, index) => {
+                let value = values[index] || "";
               value = value.replace(/^"|"$/g, "");
 
-              switch (header) {
-                case "prompt_tokens":
-                case "completion_tokens":
-                case "total_tokens":
-                  logEntry[header] =
-                    value && value !== "" ? parseInt(value) : null;
-                  break;
-                case "cost_usd":
-                case "duration_ms":
-                  logEntry[header] =
-                    value && value !== "" ? parseFloat(value) : null;
-                  break;
-                default:
-                  logEntry[header] = value;
-              }
+                switch (header) {
+                  case "prompt_tokens":
+                  case "completion_tokens":
+                  case "total_tokens":
+                    entry[header] =
+                      value && value !== "" ? parseInt(value) : null;
+                    break;
+                  case "cost_usd":
+                  case "duration_ms":
+                    entry[header] =
+                      value && value !== "" ? parseFloat(value) : null;
+                    break;
+                  default:
+                    entry[header] = value;
+                }
             });
 
             return logEntry as LogEntry;
@@ -106,9 +107,7 @@ const BreadcrumbsDashboard = () => {
           console.log("Auto-enabling true refresh for Chrome/Edge...");
           const [handle] = await (
             (window as unknown as Window & {
-              showOpenFilePicker: (
-                options: OpenFilePickerOptions
-              ) => Promise<FileSystemFileHandle[]>
+              showOpenFilePicker: (options: unknown) => Promise<FileSystemFileHandle[]>;
             }).showOpenFilePicker({
               types: [
                 {
@@ -682,7 +681,7 @@ const BreadcrumbsDashboard = () => {
                         marginBottom: "8px",
                       }}
                     >
-                      {getSessionPreview(sessionLogs)}
+                      {getSessionPreview(sessionLogs, extractUserInput)}
                     </div>
 
                     <div
