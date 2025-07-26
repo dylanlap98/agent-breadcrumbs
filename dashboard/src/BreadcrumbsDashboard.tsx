@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Clock, Zap, DollarSign, MessageSquare, Wrench, Activity, RefreshCw, Upload } from "./components/Icons";
+import { Clock, Zap, DollarSign, Activity, RefreshCw, Upload } from "./components/Icons";
 import { extractUserInput, renderStructuredInput, extractResponse, renderStructuredResponse } from "./utils/parseUtils";
 import { formatTimestamp, formatCurrency, formatDuration, getActionIcon, getTotalStats, getSessionPreview } from "./utils/statsUtils";
 import { LogEntry } from "./utils/csvReader";
@@ -14,7 +14,7 @@ const BreadcrumbsDashboard = () => {
   const [hoveredLog, setHoveredLog] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string>("");
-  const [fileHandle, setFileHandle] = useState<any>(null);
+  const [fileHandle, setFileHandle] = useState<FileSystemFileHandle | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
 
@@ -51,7 +51,7 @@ const BreadcrumbsDashboard = () => {
             }
             values.push(current.trim());
 
-            const logEntry: any = {};
+            const logEntry: Partial<LogEntry> = {};
             headers.forEach((header, index) => {
               let value = values[index] || "";
               value = value.replace(/^"|"$/g, "");
@@ -104,15 +104,21 @@ const BreadcrumbsDashboard = () => {
       if (supportsTrueRefresh) {
         try {
           console.log("Auto-enabling true refresh for Chrome/Edge...");
-          const [handle] = await (window as any).showOpenFilePicker({
-            types: [
-              {
-                description: "CSV files",
-                accept: { "text/csv": [".csv"] },
-              },
-            ],
-            multiple: false,
-          });
+          const [handle] = await (
+            (window as unknown as Window & {
+              showOpenFilePicker: (
+                options: OpenFilePickerOptions
+              ) => Promise<FileSystemFileHandle[]>
+            }).showOpenFilePicker({
+              types: [
+                {
+                  description: "CSV files",
+                  accept: { "text/csv": [".csv"] },
+                },
+              ],
+              multiple: false,
+            })
+          );
 
           setFileHandle(handle);
           const handleFile = await handle.getFile();
@@ -121,7 +127,7 @@ const BreadcrumbsDashboard = () => {
           await loadDataFromFile(handleFile);
           console.log("True refresh enabled automatically!");
           return;
-        } catch (error) {
+        } catch {
           console.log("User cancelled file handle request, using basic mode");
         }
       }

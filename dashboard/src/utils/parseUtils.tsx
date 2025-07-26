@@ -14,16 +14,18 @@ export const extractUserInput = (inputData: string) => {
     }
   } catch {
     try {
-      let fixedJson = inputData
+      const fixedJson = inputData
         .replace(/\{(\w+):/g, '{"$1":')
         .replace(/,\s*(\w+):/g, ', "$1":')
-        .replace(/:\s*([^,\[\]{}]+)(?=[,}])/g, ': "$1"')
+        .replace(/:\s*([^,[\]{}]+)(?=[,}])/g, ': "$1"')
         .replace(/:\s*(\[[^\]]+\])/g, ": $1");
 
       const parsed = JSON.parse(fixedJson);
       return parsed;
     } catch {
-      const result: any = { prompt: "Unknown input" };
+      const result: { [key: string]: unknown; prompt: string } = {
+        prompt: "Unknown input",
+      };
       const promptMatch = inputData.match(/prompt:\s*([^,}]+)/);
       if (promptMatch) result.prompt = promptMatch[1].trim();
       const toolMatch = inputData.match(/tool_responses:\s*\[([^\]]+)\]/);
@@ -36,7 +38,7 @@ export const extractUserInput = (inputData: string) => {
   return { prompt: inputData || "Unknown input" };
 };
 
-export const renderStructuredInput = (inputData: any) => {
+export const renderStructuredInput = (inputData: Record<string, unknown> | string) => {
   if (typeof inputData === "string") return inputData;
 
   if (typeof inputData === "object" && inputData !== null) {
@@ -126,10 +128,10 @@ export const extractResponse = (outputData: string) => {
     return parsed;
   } catch {
     try {
-      let fixedJson = outputData
+      const fixedJson = outputData
         .replace(/\{(\w+):/g, '{"$1":')
         .replace(/,\s*(\w+):/g, ', "$1":')
-        .replace(/:\s*([^,\[\]{}]+)(?=[,}])/g, ': "$1"')
+        .replace(/:\s*([^,[\]{}]+)(?=[,}])/g, ': "$1"')
         .replace(/:\s*(\[[^\]]+\])/g, ": $1");
       const parsed = JSON.parse(fixedJson);
       if (parsed.response) {
@@ -144,8 +146,10 @@ export const extractResponse = (outputData: string) => {
         return { response: cleanResponse };
       }
       return parsed;
-    } catch {
-      const result: any = { response: "Unknown response" };
+      } catch {
+        const result: { [key: string]: unknown; response: string } = {
+          response: "Unknown response",
+        };
       const responseMatch = outputData.match(/response:\s*(.+)$/);
       if (responseMatch) {
         let response = responseMatch[1].trim();
@@ -159,7 +163,9 @@ export const extractResponse = (outputData: string) => {
   }
 };
 
-export const renderStructuredResponse = (responseData: any) => {
+export const renderStructuredResponse = (
+  responseData: Record<string, unknown> | string
+) => {
   if (typeof responseData === "string") {
     const toolInfo = parseToolCalls(responseData);
     if (toolInfo.hasTools) {
@@ -167,7 +173,7 @@ export const renderStructuredResponse = (responseData: any) => {
         <div>
           <div style={{ marginBottom: "8px", color: "#fbbf24" }}>🔧 Tool calls:</div>
           <ul style={{ margin: 0, paddingLeft: "20px", color: "#34d399" }}>
-            {toolInfo.tools.map((tool, i) => (
+            {toolInfo.tools.map((tool: string, i: number) => (
               <li key={i} style={{ marginBottom: "4px" }}>
                 <code style={{ backgroundColor: "rgba(52, 211, 153, 0.1)", padding: "2px 6px", borderRadius: "4px", fontFamily: "monospace", fontSize: "13px" }}>
                   {tool}
@@ -188,7 +194,7 @@ export const renderStructuredResponse = (responseData: any) => {
         <div>
           <div style={{ marginBottom: "8px", color: "#fbbf24" }}>🔧 Tool calls:</div>
           <ul style={{ margin: 0, paddingLeft: "20px", color: "#34d399" }}>
-            {toolInfo.tools.map((tool, i) => (
+            {toolInfo.tools.map((tool: string, i: number) => (
               <li key={i} style={{ marginBottom: "4px" }}>
                 <code style={{ backgroundColor: "rgba(52, 211, 153, 0.1)", padding: "2px 6px", borderRadius: "4px", fontFamily: "monospace", fontSize: "13px" }}>
                   {tool}

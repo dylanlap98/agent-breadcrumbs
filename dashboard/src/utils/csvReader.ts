@@ -47,7 +47,7 @@ export interface LogEntry {
         }
         values.push(current.trim()); // Don't forget the last value
         
-        const logEntry: any = {};
+        const logEntry: Partial<LogEntry> = {};
         headers.forEach((header, index) => {
           const value = values[index] || '';
           

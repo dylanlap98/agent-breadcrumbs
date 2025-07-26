@@ -36,7 +36,7 @@ export const getTotalStats = (logs: LogEntry[]) => {
 
 export const getSessionPreview = (
   sessionLogs: LogEntry[],
-  extractUserInput: (data: string) => any
+  extractUserInput: (data: string) => unknown
 ) => {
   const firstLlmCall = sessionLogs.find((log) => log.action_type === "llm_call");
   if (firstLlmCall) {
