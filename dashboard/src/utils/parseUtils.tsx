@@ -6,11 +6,99 @@ export const parseJsonSafely = (jsonString: string) => {
   }
 };
 
-export const extractUserInput = (inputData: string): Record<string, unknown> => {
+export const extractUserInput = (
+  inputData: string
+): Record<string, unknown> => {
   try {
     const parsed = JSON.parse(inputData);
+
+    if (parsed.human) {
+      return { prompt: parsed.human };
+    }
+
+    if (parsed.user) {
+      return { prompt: parsed.user };
+    }
+
     if (parsed.prompt) {
+      if (typeof parsed.prompt === "string") {
+        let promptString = parsed.prompt.trim();
+
+        if (
+          promptString.startsWith("[") ||
+          promptString.includes('\\"role\\"')
+        ) {
+          try {
+            let cleanedPrompt = promptString
+              .replace(/\\"/g, '"') // Replace \" with "
+              .replace(/\\\\/g, "\\"); // Replace \\ with \
+
+            const messagesArray = JSON.parse(cleanedPrompt);
+            if (Array.isArray(messagesArray)) {
+              const userMessage = messagesArray.find(
+                (msg) => msg.role === "user" || msg.role === "human"
+              );
+              if (userMessage && userMessage.content) {
+                return { prompt: userMessage.content };
+              }
+            }
+          } catch (parseError) {
+            console.warn("Failed to parse OpenAI message array:", parseError);
+          }
+        }
+
+        const promptText = promptString;
+
+        const humanMatch = promptText.match(/(?:Human|user):\s*(.+?)(?:\n|$)/i);
+        if (humanMatch) {
+          return { prompt: humanMatch[1].trim() };
+        }
+
+        const lines = promptText.split("\n").filter((line) => line.trim());
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i].trim();
+          if (line.match(/^(?:Human|user):/i)) {
+            const userInput = line.replace(/^(?:Human|user):\s*/i, "").trim();
+            if (userInput) {
+              return { prompt: userInput };
+            }
+          }
+        }
+
+        return { prompt: promptText };
+      }
+
+      if (Array.isArray(parsed.prompt)) {
+        const userMessage = parsed.prompt.find(
+          (msg) => msg.role === "user" || msg.role === "human"
+        );
+        if (userMessage && userMessage.content) {
+          return { prompt: userMessage.content };
+        }
+      }
+
       return parsed;
+    }
+
+    if (Array.isArray(parsed)) {
+      const userMessage = parsed.find(
+        (msg) => msg.role === "user" || msg.role === "human"
+      );
+      if (userMessage && userMessage.content) {
+        return { prompt: userMessage.content };
+      }
+    }
+
+    if (parsed.content) {
+      return { prompt: parsed.content };
+    }
+
+    if (parsed.text) {
+      return { prompt: parsed.text };
+    }
+
+    if (parsed.input) {
+      return { prompt: parsed.input };
     }
   } catch {
     try {
@@ -21,24 +109,96 @@ export const extractUserInput = (inputData: string): Record<string, unknown> => 
         .replace(/:\s*(\[[^\]]+\])/g, ": $1");
 
       const parsed = JSON.parse(fixedJson);
+
+      if (parsed.human) {
+        return { prompt: parsed.human };
+      }
+
+      if (parsed.user) {
+        return { prompt: parsed.user };
+      }
+
+      if (parsed.prompt) {
+        if (
+          typeof parsed.prompt === "string" &&
+          parsed.prompt.trim().startsWith("[")
+        ) {
+          try {
+            const messagesArray = JSON.parse(parsed.prompt);
+            if (Array.isArray(messagesArray)) {
+              const userMessage = messagesArray.find(
+                (msg) => msg.role === "user" || msg.role === "human"
+              );
+              if (userMessage && userMessage.content) {
+                return { prompt: userMessage.content };
+              }
+            }
+          } catch {}
+        }
+
+        const promptText = parsed.prompt;
+
+        const humanMatch = promptText.match(/(?:Human|user):\s*(.+?)(?:\n|$)/i);
+        if (humanMatch) {
+          return { prompt: humanMatch[1].trim() };
+        }
+
+        return parsed;
+      }
+
       return parsed;
     } catch {
       const result: { [key: string]: unknown; prompt: string } = {
         prompt: "Unknown input",
       };
-      const promptMatch = inputData.match(/prompt:\s*([^,}]+)/);
-      if (promptMatch) result.prompt = promptMatch[1].trim();
-      const toolMatch = inputData.match(/tool_responses:\s*\[([^\]]+)\]/);
-      if (toolMatch) {
-        result.tool_responses = toolMatch[1].split(",").map((v) => v.trim());
+
+      const openaiMatch =
+        inputData.match(
+          /\[.*?\\"role\\":\s*\\"user\\".*?\\"content\\":\s*\\"([^"\\]+(?:\\.[^"\\]*)*)\\"/
+        ) || inputData.match(/\[.*?"role":\s*"user".*?"content":\s*"([^"]+)"/);
+      if (openaiMatch) {
+        let content = openaiMatch[1].trim();
+        content = content.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+        result.prompt = content;
+        return result;
       }
+
+      const humanFieldMatch = inputData.match(/"human":\s*"([^"]+)"/);
+      if (humanFieldMatch) {
+        result.prompt = humanFieldMatch[1].trim();
+        return result;
+      }
+      const humanMatch = inputData.match(
+        /(?:Human|user):\s*(.+?)(?:\n|\\n|"|$)/i
+      );
+      if (humanMatch) {
+        result.prompt = humanMatch[1].trim();
+        return result;
+      }
+      const promptMatch = inputData.match(/prompt[:"]\s*(.+?)(?:[,}]|$)/i);
+      if (promptMatch) {
+        let promptText = promptMatch[1].trim();
+        promptText = promptText.replace(/^["']|["']$/g, "");
+        const humanInPrompt = promptText.match(
+          /(?:Human|user):\s*(.+?)(?:\n|$)/i
+        );
+        if (humanInPrompt) {
+          result.prompt = humanInPrompt[1].trim();
+        } else {
+          result.prompt = promptText;
+        }
+        return result;
+      }
+
       return result;
     }
   }
   return { prompt: inputData || "Unknown input" };
 };
 
-export const renderStructuredInput = (inputData: Record<string, unknown> | string) => {
+export const renderStructuredInput = (
+  inputData: Record<string, unknown> | string
+) => {
   if (typeof inputData === "string") return inputData;
 
   if (typeof inputData === "object" && inputData !== null) {
@@ -67,7 +227,9 @@ export const renderStructuredInput = (inputData: Record<string, unknown> | strin
     const regularFields = Object.keys(data).filter(
       (key) => !specialFields.includes(key)
     );
-    const toolResponses = data.tool_responses as unknown as string[] | undefined;
+    const toolResponses = data.tool_responses as unknown as
+      | string[]
+      | undefined;
     const toolResults = data.tool_results as unknown as string[] | undefined;
 
     return (
@@ -79,10 +241,14 @@ export const renderStructuredInput = (inputData: Record<string, unknown> | strin
             return null;
           }
           const displayValue =
-            typeof value === "string" ? cleanText(value) : JSON.stringify(value);
+            typeof value === "string"
+              ? cleanText(value)
+              : JSON.stringify(value);
           return (
             <div key={fieldName} style={{ marginBottom: "8px" }}>
-              <span style={{ fontWeight: "600", color: getFieldColor(fieldName) }}>
+              <span
+                style={{ fontWeight: "600", color: getFieldColor(fieldName) }}
+              >
                 {fieldName}
               </span>
               <span style={{ color: "#9ca3af" }}>: </span>
@@ -97,11 +263,7 @@ export const renderStructuredInput = (inputData: Record<string, unknown> | strin
             </span>
             <span style={{ color: "#9ca3af" }}>: </span>
             <span style={{ color: "#fbbf24" }}>
-              [
-              {(toolResponses || toolResults)?.join(
-                ", "
-              )}
-              ]
+              [{(toolResponses || toolResults)?.join(", ")}]
             </span>
           </div>
         )}
@@ -118,7 +280,11 @@ const parseToolCalls = (response: string) => {
   if (match) {
     const toolsText = match[1];
     const toolCalls = toolsText.split(/,\s*(?=[a-zA-Z_][a-zA-Z0-9_]*\()/);
-    return { hasTools: true, tools: toolCalls.map((t) => t.trim()), originalResponse: response };
+    return {
+      hasTools: true,
+      tools: toolCalls.map((t) => t.trim()),
+      originalResponse: response,
+    };
   }
   return { hasTools: false, tools: [], originalResponse: response };
 };
@@ -152,10 +318,10 @@ export const extractResponse = (outputData: string) => {
         return { response: cleanResponse };
       }
       return parsed;
-      } catch {
-        const result: { [key: string]: unknown; response: string } = {
-          response: "Unknown response",
-        };
+    } catch {
+      const result: { [key: string]: unknown; response: string } = {
+        response: "Unknown response",
+      };
       const responseMatch = outputData.match(/response:\s*(.+)$/);
       if (responseMatch) {
         let response = responseMatch[1].trim();
@@ -177,11 +343,21 @@ export const renderStructuredResponse = (
     if (toolInfo.hasTools) {
       return (
         <div>
-          <div style={{ marginBottom: "8px", color: "#fbbf24" }}>🔧 Tool calls:</div>
+          <div style={{ marginBottom: "8px", color: "#fbbf24" }}>
+            🔧 Tool calls:
+          </div>
           <ul style={{ margin: 0, paddingLeft: "20px", color: "#34d399" }}>
             {toolInfo.tools.map((tool: string, i: number) => (
               <li key={i} style={{ marginBottom: "4px" }}>
-                <code style={{ backgroundColor: "rgba(52, 211, 153, 0.1)", padding: "2px 6px", borderRadius: "4px", fontFamily: "monospace", fontSize: "13px" }}>
+                <code
+                  style={{
+                    backgroundColor: "rgba(52, 211, 153, 0.1)",
+                    padding: "2px 6px",
+                    borderRadius: "4px",
+                    fontFamily: "monospace",
+                    fontSize: "13px",
+                  }}
+                >
                   {tool}
                 </code>
               </li>
@@ -200,11 +376,21 @@ export const renderStructuredResponse = (
     if (toolInfo.hasTools) {
       return (
         <div>
-          <div style={{ marginBottom: "8px", color: "#fbbf24" }}>🔧 Tool calls:</div>
+          <div style={{ marginBottom: "8px", color: "#fbbf24" }}>
+            🔧 Tool calls:
+          </div>
           <ul style={{ margin: 0, paddingLeft: "20px", color: "#34d399" }}>
             {toolInfo.tools.map((tool: string, i: number) => (
               <li key={i} style={{ marginBottom: "4px" }}>
-                <code style={{ backgroundColor: "rgba(52, 211, 153, 0.1)", padding: "2px 6px", borderRadius: "4px", fontFamily: "monospace", fontSize: "13px" }}>
+                <code
+                  style={{
+                    backgroundColor: "rgba(52, 211, 153, 0.1)",
+                    padding: "2px 6px",
+                    borderRadius: "4px",
+                    fontFamily: "monospace",
+                    fontSize: "13px",
+                  }}
+                >
                   {tool}
                 </code>
               </li>
