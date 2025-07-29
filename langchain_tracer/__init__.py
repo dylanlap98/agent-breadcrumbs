@@ -33,7 +33,7 @@ def enable_http_tracing(config: TracerConfig = None, storage=None) -> HTTPTracer
         HTTPTracer instance
 
     Example:
-        >>> from agent_breadcrumbs.tracer import enable_http_tracing
+        >>> from langchain_tracer import enable_http_tracing
         >>> enable_http_tracing()
         >>>
         >>> # Now use LangChain normally - everything gets traced
