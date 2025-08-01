@@ -281,7 +281,7 @@ class HTTPInterceptor:
             # Chat Completions style response
             choice = self._to_dict(choices[0])
             message = self._to_dict(choice.get("message", {}))
-            ai_response = message.get("content")
+            ai_response = message.get("content") or choice.get("text")
 
             # Content blocks may be a list
             if isinstance(ai_response, list):
@@ -308,13 +308,14 @@ class HTTPInterceptor:
                     )
                 )
         else:
-            # Responses API style response
+            # Responses API style response or other non-choice formats
             messages = (
                 response_data.get("output")
                 or response_data.get("response")
                 or response_data.get("messages")
                 or []
             )
+
             if messages:
                 msg = self._to_dict(messages[0])
                 content_blocks = msg.get("content", [])
@@ -346,6 +347,9 @@ class HTTPInterceptor:
                             )
                         )
                 ai_response = " ".join(text_parts).strip() or None
+
+            if not ai_response:
+                ai_response = response_data.get("output_text") or response_data.get("content")
 
         # Determine action type based on call type and content
         if call_type == "INITIAL_TOOL_DECISION" and tool_calls:
