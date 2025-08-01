@@ -140,24 +140,23 @@ class CSVStorage:
 
         # Base CSV row
         base_row = trace.to_csv_row()
-
+        # Additional convenience fields for analysis
         enhanced_fields = {
-            # Direct field access for easier analysis
             "user_input": trace.user_input or "",
             "ai_response": trace.ai_response or "",
-            # Tool call summary for quick scanning
             "tool_calls_summary": self._format_tool_calls_summary(trace.tool_calls),
             "tool_results_summary": self._format_tool_results_summary(
                 trace.tool_responses
             ),
-            # Conversation flow indicator
-            "conversation_flow": self._determine_conversation_flow(trace),
         }
 
-        # Merge base row with enhanced fields
-        enhanced_row = {**base_row, **enhanced_fields}
+        # Only compute conversation flow here if the trace didn't provide one
+        if not base_row.get("conversation_flow"):
+            enhanced_fields["conversation_flow"] = self._determine_conversation_flow(
+                trace
+            )
 
-        return enhanced_row
+        return {**base_row, **enhanced_fields}
 
     def _format_tool_calls_summary(self, tool_calls: List) -> str:
         """Create a readable summary of tool calls"""
@@ -189,18 +188,25 @@ class CSVStorage:
 
     def _determine_conversation_flow(self, trace: TraceEvent) -> str:
         """Determine what stage of conversation this trace represents"""
+        call_type = trace.metadata.get("call_type")
+        if call_type == "INITIAL_TOOL_DECISION":
+            return "1_TOOL_DECISION"
+        if call_type == "FINAL_RESPONSE":
+            return "3_FINAL_RESPONSE"
+        if call_type == "DIRECT_RESPONSE":
+            return "1_DIRECT_RESPONSE"
+
         if trace.user_input and trace.tool_calls and not trace.ai_response:
             return "1_TOOL_DECISION"
-        elif trace.tool_responses and trace.ai_response:
+        if trace.tool_responses and trace.ai_response:
             return "3_FINAL_RESPONSE"
-        elif trace.tool_responses and not trace.ai_response:
+        if trace.tool_responses and not trace.ai_response:
             return "2_TOOL_PROCESSING"
-        elif trace.user_input and trace.ai_response and not trace.tool_calls:
+        if trace.user_input and trace.ai_response and not trace.tool_calls:
             return "1_DIRECT_RESPONSE"
-        elif trace.ai_response:
+        if trace.ai_response:
             return "3_FINAL_RESPONSE"
-        else:
-            return "0_UNKNOWN"
+        return "0_UNKNOWN"
 
     def load_traces(self, session_id: Optional[str] = None) -> List[TraceEvent]:
         """Load traces from CSV file"""

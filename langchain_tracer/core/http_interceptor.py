@@ -44,61 +44,98 @@ class HTTPInterceptor:
         print("🛑 TARGETED FIX stopped")
 
     def _patch_openai_sdk(self):
-        """Patch the OpenAI SDK completion methods"""
+        """Patch the OpenAI SDK methods we care about"""
         try:
-            import openai
+            # Import lazily so the package remains optional for tests
             from openai.resources.chat.completions import Completions
+            from openai.resources.responses import Responses
 
-            # Store original method
-            original_create = Completions.create
-            self.original_methods["openai_create"] = original_create
+            # Store original methods so we can unpatch later
+            orig_completion_create = Completions.create
+            orig_responses_create = Responses.create
+            self.original_methods["openai_chat_completions_create"] = orig_completion_create
+            self.original_methods["openai_responses_create"] = orig_responses_create
 
-            def traced_create(completions_self, **kwargs):
-                start_time = time.time()
-                request_data = dict(kwargs)
+            def _traced_create(original_fn, request_parser):
+                def wrapper(api_self, **kwargs):
+                    start_time = time.time()
+                    request_data = request_parser(dict(kwargs))
 
-                # Analyze the request to understand what type of call this is
-                call_type = self._analyze_request_type(request_data)
-                print(f"🔍 [TARGETED] Intercepting {call_type} call")
+                    # Analyze the request after normalization so both the
+                    # legacy Chat Completions and the newer Responses API use
+                    # the same classification logic.
+                    call_type = self._analyze_request_type(request_data)
+                    print(f"🔍 [TARGETED] Intercepting {call_type} call")
 
-                try:
-                    response = original_create(completions_self, **kwargs)
-                    duration_ms = (time.time() - start_time) * 1000
+                    try:
+                        response = original_fn(api_self, **kwargs)
+                        duration_ms = (time.time() - start_time) * 1000
 
-                    # Parse response with call type context
-                    response_data = self._parse_response_with_context(
-                        response, call_type
-                    )
+                        response_data = self._parse_response_with_context(
+                            response, call_type
+                        )
 
-                    # Create trace with proper classification
-                    trace = self._create_trace_with_context(
-                        request_data, response_data, duration_ms, call_type
-                    )
+                        trace = self._create_trace_with_context(
+                            request_parser(request_data),
+                            response_data,
+                            duration_ms,
+                            call_type,
+                        )
 
-                    self.trace_callback(trace)
+                        self.trace_callback(trace)
+                        self._log_capture_result(trace, call_type)
 
-                    # Log what we captured
-                    self._log_capture_result(trace, call_type)
+                        return response
 
-                    return response
+                    except Exception as e:
+                        print(f"❌ [TARGETED] Error in interceptor: {e}")
+                        import traceback
 
-                except Exception as e:
-                    print(f"❌ [TARGETED] Error in interceptor: {e}")
-                    import traceback
+                        traceback.print_exc()
+                        return original_fn(api_self, **kwargs)
 
-                    traceback.print_exc()
-                    return original_create(completions_self, **kwargs)
+                return wrapper
 
-            # Apply the patch
-            Completions.create = traced_create
+            # Simple passthrough parsers for now – they allow us to tweak the
+            # request format if the API uses a different field name (like
+            # `input` instead of `messages`).
+            def completion_parser(data: Dict[str, Any]) -> Dict[str, Any]:
+                return data
+
+            def responses_parser(data: Dict[str, Any]) -> Dict[str, Any]:
+                # The Responses API uses `input` rather than `messages`
+                if "input" in data and "messages" not in data:
+                    data = dict(data)
+                    data["messages"] = data.get("input")
+                return data
+
+            Completions.create = _traced_create(orig_completion_create, completion_parser)
+            Responses.create = _traced_create(orig_responses_create, responses_parser)
 
         except ImportError:
             print("⚠️ OpenAI SDK not available for patching")
             raise
 
+    def _to_dict(self, obj: Any) -> Dict[str, Any]:
+        """Convert SDK-specific objects to plain dictionaries."""
+        if isinstance(obj, dict):
+            return obj
+        if hasattr(obj, "model_dump"):
+            return obj.model_dump()
+        if hasattr(obj, "dict"):
+            return obj.dict()
+        return {}
+
     def _analyze_request_type(self, request_data: Dict[str, Any]) -> str:
         """Analyze the request to determine what type of LangChain call this is"""
         messages = request_data.get("messages", [])
+        # The Responses API may supply a single string or dict instead of the
+        # list used by Chat Completions. Normalise everything into a list of
+        # message dictionaries so downstream logic can stay the same.
+        if isinstance(messages, str):
+            messages = [{"role": "user", "content": messages}]
+        elif isinstance(messages, dict):
+            messages = [messages]
 
         # Check for tools in the request
         has_tools = bool(request_data.get("tools") or request_data.get("functions"))
@@ -121,13 +158,17 @@ class HTTPInterceptor:
     def _parse_response_with_context(self, response, call_type: str) -> Dict[str, Any]:
         """Parse response with awareness of call type"""
         try:
-            # Use the same parsing as before but with context
-            if hasattr(response, "model_dump"):
+            # Newer OpenAI SDK versions may return plain dicts, pydantic models
+            # or custom objects. Convert everything to a standard dictionary so
+            # that downstream parsing works reliably.
+            if isinstance(response, dict):
+                data = response
+            elif hasattr(response, "model_dump"):
                 data = response.model_dump()
             elif hasattr(response, "dict"):
                 data = response.dict()
             else:
-                # Manual parsing
+                # Manual parsing for objects that don't expose a dict interface
                 data = self._manual_parse_response(response)
 
             print(f"✅ [TARGETED] Parsed {call_type} response successfully")
@@ -244,30 +285,46 @@ class HTTPInterceptor:
         tool_calls = []
         token_usage = None
 
-        # Token usage
+        # Token usage (support both chat.completions and responses APIs)
         usage = response_data.get("usage", {})
         if usage:
+            prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+            completion_tokens = usage.get("completion_tokens") or usage.get(
+                "output_tokens"
+            )
+            total_tokens = usage.get("total_tokens")
+            if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+                total_tokens = prompt_tokens + completion_tokens
+
             token_usage = TokenUsage(
-                prompt_tokens=usage.get("prompt_tokens"),
-                completion_tokens=usage.get("completion_tokens"),
-                total_tokens=usage.get("total_tokens"),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
             )
 
         # Response content and tool calls
-        choices = response_data.get("choices", [])
+        choices = response_data.get("choices")
         if choices:
-            choice = choices[0]
-            message = choice.get("message", {})
+            # Chat Completions style response
+            choice = self._to_dict(choices[0])
+            message = self._to_dict(choice.get("message", {}))
+            ai_response = message.get("content") or choice.get("text")
 
-            ai_response = message.get("content")
+            # Content blocks may be a list
+            if isinstance(ai_response, list):
+                ai_response = " ".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in ai_response
+                ).strip() or None
 
-            # Parse tool calls
-            tool_calls_data = message.get("tool_calls", [])
+            tool_calls_data = message.get("tool_calls", []) or []
             for tc in tool_calls_data:
-                function = tc.get("function", {})
+                tc = self._to_dict(tc)
+                function = self._to_dict(tc.get("function", {}))
+                args = function.get("arguments", "{}")
                 try:
-                    arguments = json.loads(function.get("arguments", "{}"))
-                except:
+                    arguments = json.loads(args) if isinstance(args, str) else args
+                except Exception:
                     arguments = {}
 
                 tool_calls.append(
@@ -277,6 +334,49 @@ class HTTPInterceptor:
                         call_id=tc.get("id"),
                     )
                 )
+        else:
+            # Responses API style response or other non-choice formats
+            messages = (
+                response_data.get("output")
+                or response_data.get("response")
+                or response_data.get("messages")
+                or []
+            )
+
+            if messages:
+                msg = self._to_dict(messages[0])
+                content_blocks = msg.get("content", [])
+                text_parts: List[str] = []
+                for block in content_blocks:
+                    block = self._to_dict(block)
+                    btype = block.get("type")
+                    if btype in ("text", "output_text"):
+                        text_parts.append(block.get("text") or "")
+                    elif btype in ("tool_call", "function_call", "tool"):
+                        args = block.get("arguments") or block.get("input") or "{}"
+                        try:
+                            arguments = (
+                                json.loads(args) if isinstance(args, str) else args or {}
+                            )
+                        except Exception:
+                            arguments = {}
+                        name = (
+                            block.get("name")
+                            or block.get("tool_name")
+                            or block.get("function", {}).get("name")
+                            or "unknown_function"
+                        )
+                        tool_calls.append(
+                            ToolCall(
+                                name=name,
+                                arguments=arguments,
+                                call_id=block.get("id"),
+                            )
+                        )
+                ai_response = " ".join(text_parts).strip() or None
+
+            if not ai_response:
+                ai_response = response_data.get("output_text") or response_data.get("content")
 
         # Determine action type based on call type and content
         if call_type == "INITIAL_TOOL_DECISION" and tool_calls:
@@ -369,10 +469,20 @@ class HTTPInterceptor:
 
     def _unpatch_openai_sdk(self):
         """Restore original OpenAI SDK methods"""
-        if "openai_create" in self.original_methods:
+        if "openai_chat_completions_create" in self.original_methods:
             try:
                 from openai.resources.chat.completions import Completions
 
-                Completions.create = self.original_methods["openai_create"]
+                Completions.create = self.original_methods[
+                    "openai_chat_completions_create"
+                ]
+            except ImportError:
+                pass
+
+        if "openai_responses_create" in self.original_methods:
+            try:
+                from openai.resources.responses import Responses
+
+                Responses.create = self.original_methods["openai_responses_create"]
             except ImportError:
                 pass
