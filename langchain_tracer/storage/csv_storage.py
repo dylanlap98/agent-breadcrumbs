@@ -1,5 +1,5 @@
 """
-CSV storage backend for trace events
+Enhanced CSV storage backend with better tool call flow tracking
 """
 
 import csv
@@ -17,7 +17,6 @@ from ..models.trace import TraceEvent
 class CSVStorage:
     """
     Storage backend that writes traces to CSV files
-    Compatible with existing dashboard format
     """
 
     def __init__(
@@ -38,7 +37,7 @@ class CSVStorage:
         self.flush_thread = None
         self.stop_flush_thread = False
 
-        # CSV headers (compatible with existing format)
+        # CSV headers with tool tracking
         self.headers = [
             "action_id",
             "session_id",
@@ -53,6 +52,11 @@ class CSVStorage:
             "cost_usd",
             "duration_ms",
             "metadata",
+            "user_input",
+            "ai_response",
+            "tool_calls_summary",
+            "tool_results_summary",
+            "conversation_flow",
         ]
 
         self._initialize_file()
@@ -113,7 +117,7 @@ class CSVStorage:
             # Convert traces to CSV rows
             rows = []
             for trace in self.buffer:
-                row = trace.to_csv_row()
+                row = self._trace_to_enhanced_csv_row(trace)
                 rows.append(row)
 
             # Write to CSV
@@ -126,9 +130,77 @@ class CSVStorage:
 
             # Clear buffer
             self.buffer.clear()
+            print(f"📁 Flushed {len(rows)} traces to {self.file_path}")
 
         except Exception as e:
-            print(f"Error flushing CSV buffer: {e}")
+            print(f"Error flushing enhanced CSV buffer: {e}")
+
+    def _trace_to_enhanced_csv_row(self, trace: TraceEvent) -> Dict[str, Any]:
+        """Convert trace to enhanced CSV row with better tool tracking"""
+
+        # Base CSV row
+        base_row = trace.to_csv_row()
+
+        enhanced_fields = {
+            # Direct field access for easier analysis
+            "user_input": trace.user_input or "",
+            "ai_response": trace.ai_response or "",
+            # Tool call summary for quick scanning
+            "tool_calls_summary": self._format_tool_calls_summary(trace.tool_calls),
+            "tool_results_summary": self._format_tool_results_summary(
+                trace.tool_responses
+            ),
+            # Conversation flow indicator
+            "conversation_flow": self._determine_conversation_flow(trace),
+        }
+
+        # Merge base row with enhanced fields
+        enhanced_row = {**base_row, **enhanced_fields}
+
+        return enhanced_row
+
+    def _format_tool_calls_summary(self, tool_calls: List) -> str:
+        """Create a readable summary of tool calls"""
+        if not tool_calls:
+            return ""
+
+        summaries = []
+        for tc in tool_calls:
+            # Format: tool_name(arg1=val1, arg2=val2)
+            args_str = ", ".join([f"{k}={v}" for k, v in tc.arguments.items()])
+            summaries.append(f"{tc.name}({args_str})")
+
+        return " | ".join(summaries)
+
+    def _format_tool_results_summary(self, tool_responses: List) -> str:
+        """Create a readable summary of tool results"""
+        if not tool_responses:
+            return ""
+
+        summaries = []
+        for tr in tool_responses:
+            # Format: tool_name -> result_preview
+            result_preview = (
+                tr.content[:100] + "..." if len(tr.content) > 100 else tr.content
+            )
+            summaries.append(f"{tr.name} -> {result_preview}")
+
+        return " | ".join(summaries)
+
+    def _determine_conversation_flow(self, trace: TraceEvent) -> str:
+        """Determine what stage of conversation this trace represents"""
+        if trace.user_input and trace.tool_calls and not trace.ai_response:
+            return "1_TOOL_DECISION"
+        elif trace.tool_responses and trace.ai_response:
+            return "3_FINAL_RESPONSE"
+        elif trace.tool_responses and not trace.ai_response:
+            return "2_TOOL_PROCESSING"
+        elif trace.user_input and trace.ai_response and not trace.tool_calls:
+            return "1_DIRECT_RESPONSE"
+        elif trace.ai_response:
+            return "3_FINAL_RESPONSE"
+        else:
+            return "0_UNKNOWN"
 
     def load_traces(self, session_id: Optional[str] = None) -> List[TraceEvent]:
         """Load traces from CSV file"""
@@ -154,7 +226,7 @@ class CSVStorage:
         return traces
 
     def _csv_row_to_trace(self, row: Dict[str, str]) -> TraceEvent:
-        """Convert CSV row back to TraceEvent"""
+        """Convert CSV row back to TraceEvent with enhanced field support"""
         # Parse JSON fields
         try:
             input_data = json.loads(row.get("input_data", "{}"))
@@ -178,15 +250,19 @@ class CSVStorage:
         except ValueError:
             timestamp = datetime.utcnow()
 
+        # Use enhanced fields if available, fallback to parsed data
+        user_input = row.get("user_input") or input_data.get("prompt")
+        ai_response = row.get("ai_response") or output_data.get("response")
+
         # Create TraceEvent
         trace = TraceEvent(
             action_id=row.get("action_id", ""),
             session_id=row.get("session_id", ""),
             timestamp=timestamp,
             action_type=row.get("action_type", "llm_call"),
-            user_input=input_data.get("prompt"),
+            user_input=user_input,
             system_prompt=input_data.get("system"),
-            ai_response=output_data.get("response"),
+            ai_response=ai_response,
             model_name=row.get("model_name", ""),
             duration_ms=float(row.get("duration_ms", 0))
             if row.get("duration_ms")
@@ -213,7 +289,89 @@ class CSVStorage:
                 else None,
             )
 
+        # Parse tool calls and responses from metadata if available
+        if metadata.get("tool_calls"):
+            from ..models.trace import ToolCall
+
+            trace.tool_calls = [ToolCall.from_dict(tc) for tc in metadata["tool_calls"]]
+
+        if metadata.get("tool_responses"):
+            from ..models.trace import ToolResponse
+
+            trace.tool_responses = [
+                ToolResponse.from_dict(tr) for tr in metadata["tool_responses"]
+            ]
+
         return trace
+
+    def get_conversation_flows(
+        self, session_id: Optional[str] = None
+    ) -> Dict[str, List[TraceEvent]]:
+        """Group traces by conversation flow for analysis"""
+        traces = self.load_traces(session_id)
+
+        # Group by conversation ID from metadata
+        conversations = {}
+        for trace in traces:
+            conv_id = trace.metadata.get("conversation_id", "unknown")
+            if conv_id not in conversations:
+                conversations[conv_id] = []
+            conversations[conv_id].append(trace)
+
+        # Sort each conversation by timestamp
+        for conv_id in conversations:
+            conversations[conv_id].sort(key=lambda t: t.timestamp)
+
+        return conversations
+
+    def analyze_tool_usage(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Analyze tool usage patterns"""
+        traces = self.load_traces(session_id)
+
+        tool_stats = {}
+        total_cost = 0
+        total_duration = 0
+
+        for trace in traces:
+            # Cost analysis
+            if trace.cost_usd:
+                total_cost += trace.cost_usd
+
+            # Duration analysis
+            if trace.duration_ms:
+                total_duration += trace.duration_ms
+
+            # Tool usage analysis
+            for tool_call in trace.tool_calls:
+                tool_name = tool_call.name
+                if tool_name not in tool_stats:
+                    tool_stats[tool_name] = {
+                        "count": 0,
+                        "total_cost": 0,
+                        "total_duration": 0,
+                        "avg_cost": 0,
+                        "avg_duration": 0,
+                    }
+
+                tool_stats[tool_name]["count"] += 1
+                if trace.cost_usd:
+                    tool_stats[tool_name]["total_cost"] += trace.cost_usd
+                if trace.duration_ms:
+                    tool_stats[tool_name]["total_duration"] += trace.duration_ms
+
+        # Calculate averages
+        for tool_name in tool_stats:
+            stats = tool_stats[tool_name]
+            count = stats["count"]
+            stats["avg_cost"] = stats["total_cost"] / count if count > 0 else 0
+            stats["avg_duration"] = stats["total_duration"] / count if count > 0 else 0
+
+        return {
+            "tool_stats": tool_stats,
+            "total_cost": total_cost,
+            "total_duration": total_duration,
+            "total_traces": len(traces),
+        }
 
     def get_sessions(self) -> List[str]:
         """Get list of all session IDs"""
@@ -231,7 +389,7 @@ class CSVStorage:
                         sessions.add(session_id)
 
         except Exception as e:
-            print(f"Error getting sessions from CSV: {e}")
+            print(f"Error getting sessions from enhanced CSV: {e}")
 
         return list(sessions)
 
@@ -254,7 +412,7 @@ class CSVStorage:
         self.flush()
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get storage statistics"""
+        """Get enhanced storage statistics"""
         traces = self.load_traces()
 
         if not traces:
@@ -264,6 +422,7 @@ class CSVStorage:
                 "total_cost": 0.0,
                 "total_tokens": 0,
                 "avg_duration": 0.0,
+                "tool_usage": {},
             }
 
         total_cost = sum(t.cost_usd for t in traces if t.cost_usd)
@@ -277,6 +436,9 @@ class CSVStorage:
 
         sessions = set(t.session_id for t in traces)
 
+        # Tool usage analysis
+        tool_analysis = self.analyze_tool_usage()
+
         return {
             "total_traces": len(traces),
             "total_sessions": len(sessions),
@@ -287,4 +449,6 @@ class CSVStorage:
             "file_size": self.file_path.stat().st_size
             if self.file_path.exists()
             else 0,
+            "tool_usage": tool_analysis["tool_stats"],
+            "conversation_flows": len(self.get_conversation_flows()),
         }

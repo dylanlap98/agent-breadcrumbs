@@ -26,6 +26,11 @@ class ToolCall:
             name=data["name"], arguments=data["arguments"], call_id=data.get("call_id")
         )
 
+    def __str__(self) -> str:
+        """Human readable string representation"""
+        args_str = ", ".join([f"{k}={v}" for k, v in self.arguments.items()])
+        return f"{self.name}({args_str})"
+
 
 @dataclass
 class ToolResponse:
@@ -52,6 +57,12 @@ class ToolResponse:
             content=data["content"],
             error=data.get("error"),
         )
+
+    def __str__(self) -> str:
+        """Human readable string representation"""
+        if self.error:
+            return f"{self.name}: ERROR - {self.error}"
+        return f"{self.name}: {self.content[:100]}{'...' if len(self.content) > 100 else ''}"
 
 
 @dataclass
@@ -81,7 +92,7 @@ class TokenUsage:
 @dataclass
 class TraceEvent:
     """
-    A single trace event representing one LLM interaction
+    TraceEvent for LLM interaction
     """
 
     # Identifiers
@@ -90,7 +101,7 @@ class TraceEvent:
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
     # Action details
-    action_type: str = "llm_call"  # llm_call, tool_use, etc.
+    action_type: str = "llm_call"
 
     # Content
     user_input: Optional[str] = None
@@ -116,6 +127,159 @@ class TraceEvent:
 
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_csv_row(self) -> Dict[str, Any]:
+        """TARGETED FIX: Guaranteed proper CSV output with no empty fields"""
+
+        # Build input_data structure
+        input_data = {}
+
+        if self.user_input:
+            input_data["prompt"] = self.user_input
+
+        if self.system_prompt:
+            input_data["system"] = self.system_prompt
+
+        if self.tool_responses:
+            input_data["tool_responses"] = [str(tr) for tr in self.tool_responses]
+
+        # Build output_data structure
+        output_data = {}
+        call_type = self.metadata.get("call_type", "UNKNOWN")
+
+        if call_type == "INITIAL_TOOL_DECISION" and self.tool_calls:
+            # This is the tool decision call
+            tool_call_strs = [str(tc) for tc in self.tool_calls]
+            if len(tool_call_strs) == 1:
+                output_data["response"] = (
+                    f"🔧 Decided to call tool: {tool_call_strs[0]}"
+                )
+            else:
+                output_data["response"] = (
+                    f"🔧 Decided to call tools: {', '.join(tool_call_strs)}"
+                )
+            output_data["decision_type"] = "tool_selection"
+
+        elif call_type == "FINAL_RESPONSE" and self.ai_response:
+            # This is the final response after tool execution
+            output_data["response"] = self.ai_response
+            output_data["response_type"] = "final_answer"
+            if self.tool_responses:
+                output_data["based_on_tools"] = [tr.name for tr in self.tool_responses]
+
+        elif call_type == "DIRECT_RESPONSE" and self.ai_response:
+            # Direct response without tools
+            output_data["response"] = self.ai_response
+            output_data["response_type"] = "direct_answer"
+
+        elif self.ai_response:
+            # Any other AI response
+            output_data["response"] = self.ai_response
+            output_data["response_type"] = "general"
+
+        elif self.tool_calls:
+            # Tool calls without clear context
+            tool_call_strs = [str(tc) for tc in self.tool_calls]
+            output_data["response"] = f"🔧 Tool calls: {', '.join(tool_call_strs)}"
+            output_data["response_type"] = "tool_calls"
+
+        elif self.tool_responses:
+            # Tool responses without clear context
+            output_data["tool_results"] = [str(tr) for tr in self.tool_responses]
+            output_data["response_type"] = "tool_results"
+
+        else:
+            # Absolute fallback - never leave empty
+            output_data["response"] = (
+                f"Processing {call_type}" if call_type != "UNKNOWN" else "Processing..."
+            )
+            output_data["response_type"] = "processing"
+
+        # Enhanced metadata with call type info
+        enhanced_metadata = dict(self.metadata)
+        enhanced_metadata["call_type"] = call_type
+        if self.tool_calls:
+            enhanced_metadata["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]
+        if self.tool_responses:
+            enhanced_metadata["tool_responses"] = [
+                tr.to_dict() for tr in self.tool_responses
+            ]
+
+        # Determine conversation flow based on call type
+        conversation_flow = self._determine_conversation_flow_by_call_type(call_type)
+
+        # Build the complete CSV row
+        csv_row = {
+            "action_id": self.action_id,
+            "session_id": self.session_id,
+            "timestamp": self.timestamp.isoformat(),
+            "action_type": self.action_type,
+            "input_data": json.dumps(input_data) if input_data else "{}",
+            "output_data": json.dumps(output_data),  # GUARANTEED not empty
+            "model_name": self.model_name or "",
+            "prompt_tokens": self.token_usage.prompt_tokens
+            if self.token_usage
+            else None,
+            "completion_tokens": self.token_usage.completion_tokens
+            if self.token_usage
+            else None,
+            "total_tokens": self.token_usage.total_tokens if self.token_usage else None,
+            "cost_usd": self.cost_usd,
+            "duration_ms": self.duration_ms,
+            "metadata": json.dumps(enhanced_metadata),
+            # Enhanced fields
+            "user_input": self.user_input or "",
+            "ai_response": self.ai_response or "",
+            "tool_calls_summary": self._format_tool_calls_summary(),
+            "tool_results_summary": self._format_tool_results_summary(),
+            "conversation_flow": conversation_flow,
+        }
+
+        return csv_row
+
+    def _determine_conversation_flow_by_call_type(self, call_type: str) -> str:
+        """TARGETED FIX: Determine flow based on call type"""
+        if call_type == "INITIAL_TOOL_DECISION":
+            return "1_TOOL_DECISION"
+        elif call_type == "FINAL_RESPONSE":
+            return "3_FINAL_RESPONSE"
+        elif call_type == "DIRECT_RESPONSE":
+            return "1_DIRECT_RESPONSE"
+        elif self.tool_responses and not self.ai_response:
+            return "2_TOOL_PROCESSING"
+        elif self.ai_response and self.tool_responses:
+            return "3_FINAL_RESPONSE"
+        elif self.tool_calls:
+            return "1_TOOL_DECISION"
+        elif self.ai_response:
+            return "3_FINAL_RESPONSE"
+        else:
+            return "0_UNKNOWN"
+
+    def _format_tool_calls_summary(self) -> str:
+        """Create a readable summary of tool calls"""
+        if not self.tool_calls:
+            return ""
+
+        summaries = []
+        for tc in self.tool_calls:
+            summaries.append(str(tc))
+
+        return " | ".join(summaries)
+
+    def _format_tool_results_summary(self) -> str:
+        """Create a readable summary of tool results"""
+        if not self.tool_responses:
+            return ""
+
+        summaries = []
+        for tr in self.tool_responses:
+            result_preview = (
+                tr.content[:100] + "..." if len(tr.content) > 100 else tr.content
+            )
+            summaries.append(f"{tr.name} -> {result_preview}")
+
+        return " | ".join(summaries)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
@@ -186,48 +350,33 @@ class TraceEvent:
             metadata=data.get("metadata", {}),
         )
 
-    def to_csv_row(self) -> Dict[str, Any]:
-        """Convert to CSV-compatible row (matches existing format)"""
-        # Serialize complex fields to JSON strings
-        input_data = {}
-        if self.user_input:
-            input_data["prompt"] = self.user_input
-        if self.system_prompt:
-            input_data["system"] = self.system_prompt
-        if self.tool_responses:
-            input_data["tool_responses"] = [tr.content for tr in self.tool_responses]
+    def get_summary(self) -> str:
+        """Get a human-readable summary of this trace"""
+        call_type = self.metadata.get("call_type", "UNKNOWN")
 
-        output_data = {}
-        if self.ai_response:
-            output_data["response"] = self.ai_response
-        if self.tool_calls:
-            # Format tool calls in the expected format
-            tool_call_str = ", ".join(
-                [
-                    f"{tc.name}({', '.join([f'{k}={v}' for k, v in tc.arguments.items()])})"
-                    for tc in self.tool_calls
-                ]
-            )
-            output_data["response"] = (
-                f"🔧 Decided to call tool{'s' if len(self.tool_calls) > 1 else ''}: {tool_call_str}"
-            )
+        if call_type == "INITIAL_TOOL_DECISION":
+            tools = ", ".join([tc.name for tc in self.tool_calls])
+            return f"Tool Decision: {tools}"
+        elif call_type == "FINAL_RESPONSE":
+            return f"Final Response: {self.ai_response[:100] if self.ai_response else 'No response'}..."
+        elif call_type == "DIRECT_RESPONSE":
+            return f"Direct Response: {self.ai_response[:100] if self.ai_response else 'No response'}..."
+        else:
+            return f"LLM Call ({call_type}): {self.action_type}"
 
-        return {
-            "action_id": self.action_id,
-            "session_id": self.session_id,
-            "timestamp": self.timestamp.isoformat(),
-            "action_type": self.action_type,
-            "input_data": json.dumps(input_data),
-            "output_data": json.dumps(output_data),
-            "model_name": self.model_name or "",
-            "prompt_tokens": self.token_usage.prompt_tokens
-            if self.token_usage
-            else None,
-            "completion_tokens": self.token_usage.completion_tokens
-            if self.token_usage
-            else None,
-            "total_tokens": self.token_usage.total_tokens if self.token_usage else None,
-            "cost_usd": self.cost_usd,
-            "duration_ms": self.duration_ms,
-            "metadata": json.dumps(self.metadata),
-        }
+    def is_tool_call_step(self) -> bool:
+        """Check if this trace represents a tool call decision"""
+        return (
+            bool(self.tool_calls)
+            or self.metadata.get("call_type") == "INITIAL_TOOL_DECISION"
+        )
+
+    def is_final_response(self) -> bool:
+        """Check if this trace represents a final response to the user"""
+        return self.metadata.get("call_type") == "FINAL_RESPONSE" or (
+            bool(self.ai_response) and not self.tool_calls
+        )
+
+    def has_tool_results(self) -> bool:
+        """Check if this trace contains tool execution results"""
+        return bool(self.tool_responses)
