@@ -258,33 +258,39 @@ class HTTPInterceptor:
         tool_calls = []
         token_usage = None
 
-        # Token usage
+        # Token usage (support both chat.completions and responses APIs)
         usage = response_data.get("usage", {})
         if usage:
+            prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+            completion_tokens = usage.get("completion_tokens") or usage.get(
+                "output_tokens"
+            )
+            total_tokens = usage.get("total_tokens")
+            if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+                total_tokens = prompt_tokens + completion_tokens
+
             token_usage = TokenUsage(
-                prompt_tokens=usage.get("prompt_tokens"),
-                completion_tokens=usage.get("completion_tokens"),
-                total_tokens=usage.get("total_tokens"),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
             )
 
         # Response content and tool calls
-        choices = response_data.get("choices", [])
+        choices = response_data.get("choices")
         if choices:
-            # Work with the first choice and normalise to a dict
+            # Chat Completions style response
             choice = self._to_dict(choices[0])
             message = self._to_dict(choice.get("message", {}))
-
             ai_response = message.get("content")
 
-            # OpenAI responses may return content as a list of blocks
+            # Content blocks may be a list
             if isinstance(ai_response, list):
                 ai_response = " ".join(
                     block.get("text", "") if isinstance(block, dict) else str(block)
                     for block in ai_response
                 ).strip() or None
 
-            # Parse tool calls
-            tool_calls_data = message.get("tool_calls", [])
+            tool_calls_data = message.get("tool_calls", []) or []
             for tc in tool_calls_data:
                 tc = self._to_dict(tc)
                 function = self._to_dict(tc.get("function", {}))
@@ -301,6 +307,45 @@ class HTTPInterceptor:
                         call_id=tc.get("id"),
                     )
                 )
+        else:
+            # Responses API style response
+            messages = (
+                response_data.get("output")
+                or response_data.get("response")
+                or response_data.get("messages")
+                or []
+            )
+            if messages:
+                msg = self._to_dict(messages[0])
+                content_blocks = msg.get("content", [])
+                text_parts: List[str] = []
+                for block in content_blocks:
+                    block = self._to_dict(block)
+                    btype = block.get("type")
+                    if btype in ("text", "output_text"):
+                        text_parts.append(block.get("text") or "")
+                    elif btype in ("tool_call", "function_call", "tool"):
+                        args = block.get("arguments") or block.get("input") or "{}"
+                        try:
+                            arguments = (
+                                json.loads(args) if isinstance(args, str) else args or {}
+                            )
+                        except Exception:
+                            arguments = {}
+                        name = (
+                            block.get("name")
+                            or block.get("tool_name")
+                            or block.get("function", {}).get("name")
+                            or "unknown_function"
+                        )
+                        tool_calls.append(
+                            ToolCall(
+                                name=name,
+                                arguments=arguments,
+                                call_id=block.get("id"),
+                            )
+                        )
+                ai_response = " ".join(text_parts).strip() or None
 
         # Determine action type based on call type and content
         if call_type == "INITIAL_TOOL_DECISION" and tool_calls:
