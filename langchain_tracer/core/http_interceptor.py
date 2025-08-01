@@ -96,6 +96,16 @@ class HTTPInterceptor:
             print("⚠️ OpenAI SDK not available for patching")
             raise
 
+    def _to_dict(self, obj: Any) -> Dict[str, Any]:
+        """Convert SDK-specific objects to plain dictionaries."""
+        if isinstance(obj, dict):
+            return obj
+        if hasattr(obj, "model_dump"):
+            return obj.model_dump()
+        if hasattr(obj, "dict"):
+            return obj.dict()
+        return {}
+
     def _analyze_request_type(self, request_data: Dict[str, Any]) -> str:
         """Analyze the request to determine what type of LangChain call this is"""
         messages = request_data.get("messages", [])
@@ -121,13 +131,17 @@ class HTTPInterceptor:
     def _parse_response_with_context(self, response, call_type: str) -> Dict[str, Any]:
         """Parse response with awareness of call type"""
         try:
-            # Use the same parsing as before but with context
-            if hasattr(response, "model_dump"):
+            # Newer OpenAI SDK versions may return plain dicts, pydantic models
+            # or custom objects. Convert everything to a standard dictionary so
+            # that downstream parsing works reliably.
+            if isinstance(response, dict):
+                data = response
+            elif hasattr(response, "model_dump"):
                 data = response.model_dump()
             elif hasattr(response, "dict"):
                 data = response.dict()
             else:
-                # Manual parsing
+                # Manual parsing for objects that don't expose a dict interface
                 data = self._manual_parse_response(response)
 
             print(f"✅ [TARGETED] Parsed {call_type} response successfully")
@@ -256,18 +270,28 @@ class HTTPInterceptor:
         # Response content and tool calls
         choices = response_data.get("choices", [])
         if choices:
-            choice = choices[0]
-            message = choice.get("message", {})
+            # Work with the first choice and normalise to a dict
+            choice = self._to_dict(choices[0])
+            message = self._to_dict(choice.get("message", {}))
 
             ai_response = message.get("content")
+
+            # OpenAI responses may return content as a list of blocks
+            if isinstance(ai_response, list):
+                ai_response = " ".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in ai_response
+                ).strip() or None
 
             # Parse tool calls
             tool_calls_data = message.get("tool_calls", [])
             for tc in tool_calls_data:
-                function = tc.get("function", {})
+                tc = self._to_dict(tc)
+                function = self._to_dict(tc.get("function", {}))
+                args = function.get("arguments", "{}")
                 try:
-                    arguments = json.loads(function.get("arguments", "{}"))
-                except:
+                    arguments = json.loads(args) if isinstance(args, str) else args
+                except Exception:
                     arguments = {}
 
                 tool_calls.append(
